@@ -3,6 +3,7 @@
     kicad-fdtd export  board.kicad_pcb [-o out.json]        exact copper geometry -> JSON (runs KiCad's Python)
     kicad-fdtd stats   board.kicad_pcb | geometry.json      board statistics (size, stackup, copper, nets, pairs)
     kicad-fdtd pair    geometry.json NET_P [NET_N] --ports REF.PAD ...   S-parameters / impedance on the GPU
+    kicad-fdtd thermal geometry.json --power U1=1.2 ... [--net N --from R.P --to R.P --current A]   steady-state T, IR drop
     kicad-fdtd gui     [--port 8765]                         browser GUI
     kicad-fdtd test                                          microstrip milestone (needs a GPU for speed)
 """
@@ -51,6 +52,11 @@ def main(argv=None):
         if rest and rest[0].lower().endswith(".kicad_pcb"):
             rest[0] = _geometry_of(rest[0])
         return pair_main(rest)
+    if cmd == "thermal":
+        from .thermal import main as thermal_main
+        if rest and rest[0].lower().endswith(".kicad_pcb"):
+            rest[0] = _geometry_of(rest[0])
+        return thermal_main(rest)
     if cmd == "gui":
         from .gui.server import main as gui_main
         gui_main(rest)

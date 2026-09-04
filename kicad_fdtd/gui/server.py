@@ -31,7 +31,7 @@ import numpy as np
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(os.path.dirname(HERE)))
-from kicad_fdtd import geometry, pair, export as kexport
+from kicad_fdtd import geometry, pair, thermal, export as kexport
 
 STATIC = os.path.join(HERE, "static")
 BOARD_DIRS = ["out"]
@@ -182,6 +182,11 @@ class H(SimpleHTTPRequestHandler):
                 return self._json({"n": s["n"], "t": s["t"], "shape": list(s["data"].shape), "data": b64(s["data"]), "z": STATE["snap_z"]})
             if u.path == "/api/result":
                 return self._json(STATE["result"] or {"error": "no result"})
+            if u.path == "/api/thermal":
+                return self._json(STATE.get("thermal") or {"error": "no thermal result"})
+            if u.path == "/api/footprints":
+                bd = STATE["board"]
+                return self._json({"footprints": bd.g.get("footprints", [])} if bd else {"footprints": []})
             return super().do_GET()
         except Exception:
             return self._json({"error": traceback.format_exc()}, 500)
@@ -199,6 +204,28 @@ class H(SimpleHTTPRequestHandler):
                 out = os.path.join(BOARD_DIRS[0], os.path.splitext(os.path.basename(pcb))[0] + "_geometry.json")
                 kexport.export(pcb, out)
                 return self._json({"name": os.path.basename(out)})
+            if u.path == "/api/thermal":
+                with LOCK:
+                    bd = load_board(req["file"], req.get("ref") or None)
+                    g = thermal.Grid(bd, cell=float(req.get("cell", 0.25)))
+                    dc = None
+                    d = req.get("dc") or {}
+                    if d.get("net") and d.get("src") and d.get("sink") and float(d.get("current") or 0):
+                        dc = thermal.solve_dc(g, d["net"], tuple(d["src"].split(".")), tuple(d["sink"].split(".")), float(d["current"]))
+                    powers = {k: float(v) for k, v in (req.get("powers") or {}).items() if float(v) > 0}
+                    th = thermal.solve_thermal(g, powers, h=float(req.get("h", 10.0)), tamb=float(req.get("tamb", 25.0)), extra_q=dc["joule"] if dc else None)
+                    out = thermal.result_json(g, th, dc)
+                    STATE["thermal"] = out
+                    return self._json(out)
+            if u.path == "/api/screenshot":
+                # the page renders itself (html2canvas) and posts a data URL; saved under docs/ for the README
+                name = "".join(c for c in req.get("name", "shot") if c.isalnum() or c in "-_") or "shot"
+                data = req["data"].split(",", 1)[1]
+                d = os.path.join(os.path.dirname(os.path.dirname(HERE)), "docs")      # repo root / docs
+                os.makedirs(d, exist_ok=True)
+                path = os.path.join(d, name + ".png")
+                open(path, "wb").write(base64.b64decode(data))
+                return self._json({"path": path, "bytes": os.path.getsize(path)})
             if u.path == "/api/setup":
                 if STATE["running"]:
                     return self._json({"error": "a run is in progress"}, 409)

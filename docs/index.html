@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kicad_fdtd</title>
+<meta name="description" content="A GPU field solver for KiCad boards: exact copper in, S-parameters, impedance, temperature and IR drop out. Python, NumPy, CuPy. Open source, MIT.">
+<meta property="og:title" content="kicad_fdtd">
+<meta property="og:description" content="GPU field solver for KiCad boards: signal integrity, thermal and DC on the exact copper of your board.">
+<meta property="og:image" content="https://jeromegraves.com/kicad_fdtd/gui_si.png">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap">
+<style>
+  :root { --bg:#14171c; --panel:#1c2027; --line:#2c323b; --text:#d7dbe0; --dim:#8a93a0; --acc:#d98c3a; --ok:#5fbf7a; --link:#5ce1ff; }
+  * { box-sizing:border-box; }
+  html { scroll-behavior:smooth; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.55 "IBM Plex Sans", "Segoe UI", system-ui, sans-serif; }
+  a { color:var(--link); text-decoration:none; } a:hover { text-decoration:underline; }
+  code, pre { font-family:"IBM Plex Mono", Consolas, monospace; font-size:.92em; }
+  pre { background:#0f1115; border:1px solid var(--line); border-radius:6px; padding:14px 16px; overflow-x:auto; line-height:1.5; }
+  .wrap { max-width:1080px; margin:0 auto; padding:0 24px; }
+  header.top { display:flex; align-items:center; justify-content:space-between; padding:18px 0; border-bottom:1px solid var(--line); }
+  header.top .brand { color:var(--acc); font-weight:600; letter-spacing:.04em; font-size:18px; }
+  header.top nav a { color:var(--dim); margin-left:20px; font-size:14px; }
+  header.top nav a:hover { color:var(--text); }
+  .hero { padding:56px 0 32px; display:grid; grid-template-columns: 1.1fr .9fr; gap:40px; align-items:center; }
+  .hero h1 { font-size:clamp(30px, 4.5vw, 46px); line-height:1.1; margin:0 0 16px; font-weight:600; text-wrap:balance; }
+  .hero h1 span { color:var(--acc); }
+  .hero p.lead { font-size:18px; color:var(--dim); max-width:56ch; margin:0 0 22px; }
+  .btns { display:flex; gap:10px; flex-wrap:wrap; }
+  .btn { display:inline-block; padding:9px 16px; border-radius:5px; border:1px solid #3a4350; background:#2a313b; color:var(--text); font-weight:500; }
+  .btn.primary { background:var(--acc); border-color:var(--acc); color:#1a1408; }
+  .btn:hover { text-decoration:none; filter:brightness(1.08); }
+  .hero img, figure img { width:100%; border:1px solid var(--line); border-radius:6px; display:block; }
+  .stats { display:grid; grid-template-columns:repeat(4, 1fr); gap:12px; margin:8px 0 48px; }
+  .stat { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:14px 16px; }
+  .stat b { display:block; font-size:24px; font-weight:600; color:var(--text); font-variant-numeric: tabular-nums; }
+  .stat span { color:var(--dim); font-size:13px; }
+  h2 { font-size:22px; margin:44px 0 12px; font-weight:600; }
+  h2 small { color:var(--dim); font-weight:400; font-size:14px; margin-left:10px; letter-spacing:.06em; text-transform:uppercase; }
+  .cols { display:grid; grid-template-columns:1fr 1fr; gap:28px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:6px; padding:18px 20px; }
+  .card h3 { margin:0 0 8px; font-size:16px; font-weight:600; color:var(--acc); }
+  .card p, .card ul { margin:0; color:var(--text); }
+  .card ul { padding-left:18px; }
+  .card li { margin:4px 0; }
+  figure { margin:18px 0 0; }
+  figcaption { color:var(--dim); font-size:13px; margin-top:8px; }
+  table { border-collapse:collapse; width:100%; font-size:14px; margin-top:6px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; font-size:12px; letter-spacing:.06em; text-transform:uppercase; }
+  td.num { font-variant-numeric: tabular-nums; white-space:nowrap; }
+  .tablewrap { overflow-x:auto; }
+  footer { border-top:1px solid var(--line); margin-top:56px; padding:24px 0 40px; color:var(--dim); font-size:14px; }
+  @media (max-width: 820px) { .hero, .cols { grid-template-columns:1fr; } .stats { grid-template-columns:repeat(2, 1fr); } }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior:auto; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header class="top">
+    <div class="brand">kicad_fdtd</div>
+    <nav>
+      <a href="#what">What it does</a>
+      <a href="#how">How</a>
+      <a href="#numbers">Numbers</a>
+      <a href="https://github.com/Jerome-Graves/kicad_fdtd">GitHub</a>
+      <a href="https://jeromegraves.com/">Jerome Graves</a>
+    </nav>
+  </header>
+
+  <section class="hero">
+    <div>
+      <h1>A field solver that reads your <span>KiCad board</span> and shows its working</h1>
+      <p class="lead">Exact copper in. Impedance, S-parameters, temperature and IR drop out. Every mesh edge's owner is on screen, and it refuses to solve a model it cannot trust. Python, NumPy and CuPy on an ordinary gaming GPU.</p>
+      <div class="btns">
+        <a class="btn primary" href="https://github.com/Jerome-Graves/kicad_fdtd">Get it on GitHub</a>
+        <a class="btn" href="#quick">Quick start</a>
+      </div>
+    </div>
+    <img src="gui_si.png" alt="The kicad_fdtd GUI: a USB pair on a 4-layer board with the PEC edge assignment per conductor, the odd-mode field, port sites, and S11, S21 and differential impedance plots">
+  </section>
+
+  <div class="stats">
+    <div class="stat"><b>3.2 G</b><span>cell updates per second on an RTX 4070</span></div>
+    <div class="stat"><b>~1 min</b><span>USB pair at 0.1 mm on a 4-layer board</span></div>
+    <div class="stat"><b>6</b><span>analytic and cross-solver checks in the test suite</span></div>
+    <div class="stat"><b>MIT</b><span>licence, plain Python, no vendor tools</span></div>
+  </div>
+
+  <h2 id="what">What it does</h2>
+  <div class="cols">
+    <div class="card">
+      <h3>Signal integrity</h3>
+      <p>Pick one net or a differential pair and the pads that end it. The tool sites lumped ports on the right copper, meshes the pair and its neighbours finely, assigns every Yee edge to a conductor by an exact polygon test, and runs a Yee FDTD with CPML boundaries. Out come S11, S21, Zin or Zdiff, and a field animation along the trace.</p>
+    </div>
+    <div class="card">
+      <h3>Thermal and DC</h3>
+      <p>Give it component powers and a convection coefficient: a finite-volume heat solve over the whole board, copper layers as sheets scaled by their copper fraction, via barrels through the planes. Add a DC net with source and sink pads for the IR drop, the current density per cell and the Joule heat, which feeds back into the temperature.</p>
+    </div>
+    <div class="card">
+      <h3>Board statistics</h3>
+      <p>One command reports size, stackup (read from the file, or a flagged FR4 default), copper area and fill per layer, footprint, pad, via and net counts, the reference net it will use, and the differential pairs it recognises by name.</p>
+    </div>
+    <div class="card">
+      <h3>Checks before compute</h3>
+      <ul>
+        <li>Port faces must sit entirely on the signal copper and on reference copper below it.</li>
+        <li>A merge check finds any mesh node shared by two conductors and blocks the run.</li>
+        <li>Time step, step count and smallest cells are printed before a second of GPU time is spent.</li>
+      </ul>
+    </div>
+  </div>
+
+  <figure>
+    <img src="gui_thermal.png" alt="Thermal view: a 40 mm 4-layer board with 1.4 W in six parts, temperature overlay on the bottom copper with the hot spot at the charger and a colour bar from 56 to 79 degrees C">
+    <figcaption>1.4 W spread over six parts on a 40 mm board in still air. The charger on the bottom copper is the hot spot at 79 °C; the 3V3 pour drops 7.8 mV at 1 A.</figcaption>
+  </figure>
+
+  <h2 id="quick">Quick start</h2>
+<pre>git clone https://github.com/Jerome-Graves/kicad_fdtd
+cd kicad_fdtd
+python -m venv venv &amp;&amp; venv\Scripts\activate
+pip install -e .[gpu]
+
+kicad-fdtd stats   my_board.kicad_pcb
+kicad-fdtd pair    my_board.kicad_pcb /USB_DP /USB_DM --ports J1.A6 U5.1 J1.A7 U5.3
+kicad-fdtd thermal my_board.kicad_pcb --power U1=0.5 U3=0.3 --net /3V3 --from U3.4 --to J8.1 --current 1
+kicad-fdtd gui</pre>
+  <p style="color:var(--dim)">KiCad 7 or later must be installed: the exporter runs inside KiCad's own Python, found automatically. Without a CUDA GPU add <code>--cpu</code>; the NumPy path is the same physics, about a hundred times slower.</p>
+
+  <h2 id="how">How it works <small>a few hundred readable lines</small></h2>
+  <div class="cols">
+    <div class="card">
+      <h3>Geometry</h3>
+      <p>KiCad's own geometry engine gives exact polygons for pads, tracks, zone fills and vias, plus the stackup. Nothing is rasterised until it reaches the mesh, and there each edge midpoint is tested against the real polygons.</p>
+    </div>
+    <div class="card">
+      <h3>Engine</h3>
+      <p>Six fused CuPy kernels per time step carry the curl, the CPML and the lumped ports. Port voltages and currents are read by one more kernel and stay on the device, so a step is close to the memory-bandwidth floor of the GPU.</p>
+    </div>
+  </div>
+
+  <h2 id="numbers">Numbers <small>from the test suite and the reference boards</small></h2>
+  <div class="tablewrap">
+  <table>
+    <tr><th>Case</th><th>kicad_fdtd</th><th>Reference</th></tr>
+    <tr><td>0.2 mm microstrip over 0.1 mm FR4, 50 Ω ports</td><td class="num">S21 −0.06 dB, S11 −18.6 dB, Zin 42 Ω</td><td class="num">openEMS 43 Ω, 2D cross-section 45 Ω</td></tr>
+    <tr><td>USB pair on a 4-layer board, 0.15 mm and 0.1 mm meshes</td><td class="num">Zdiff 58 Ω and 60 Ω</td><td class="num">2D cross-section 66 Ω</td></tr>
+    <tr><td>Fused kernels vs slice reference vs pre-fusion code</td><td class="num">same step count, S-parameters equal to 1e-6 dB</td><td></td></tr>
+    <tr><td>Copper-clad plate, 1 W, h = 10 W/m²K both faces</td><td class="num">mean rise 319.6 K</td><td class="num">P / (2hA) = 312.5 K</td></tr>
+    <tr><td>0.2 mm × 35 µm track, 1 A over 11.4 mm</td><td class="num">27.7 mV</td><td class="num">ρL / (wt) = 27.4 mV</td></tr>
+    <tr><td>4-layer 40 mm board, 1.4 W, natural convection</td><td class="num">mean rise 44 K, 79 °C at the charger</td><td class="num">P / (2hA) = 44 K</td></tr>
+  </table>
+  </div>
+
+  <h2>Limits, plainly</h2>
+  <div class="card">
+    <ul>
+      <li>Copper is perfect and infinitely thin; conductor and dielectric loss are on the roadmap.</li>
+      <li>Only the selected nets and their neighbours within 0.6 mm are meshed finely; component bodies are not modelled.</li>
+      <li>Thermal is steady state with a uniform convection coefficient, no radiation and no enclosure: it ranks hot spots and gives a conservative rise, not a junction temperature.</li>
+    </ul>
+  </div>
+
+  <footer>
+    kicad_fdtd is written and maintained by <a href="https://jeromegraves.com/">Jerome Graves</a>. Source, issues and contributing notes on <a href="https://github.com/Jerome-Graves/kicad_fdtd">GitHub</a>. MIT licence.
+  </footer>
+</div>
+</body>
+</html>

@@ -7,10 +7,15 @@ S-parameters, impedance and a field view in a browser. Written in Python with Nu
 no openEMS, no black box.
 
 ```
-kicad-fdtd stats  my_board.kicad_pcb                      # what is on the board
-kicad-fdtd pair   my_board.kicad_pcb /USB_DP /USB_DM --ports J1.A6 U5.1 J1.A7 U5.3
-kicad-fdtd gui                                            # everything above in a browser
+kicad-fdtd stats   my_board.kicad_pcb                      # what is on the board
+kicad-fdtd pair    my_board.kicad_pcb /USB_DP /USB_DM --ports J1.A6 U5.1 J1.A7 U5.3
+kicad-fdtd thermal my_board.kicad_pcb --power U1=0.5 U3=0.3 --net /3V3 --from U3.4 --to J8.1 --current 1
+kicad-fdtd gui                                             # everything above in a browser
 ```
+
+![Signal integrity: USB pair, PEC edge assignment, odd-mode field and S-parameters](docs/gui_si.png)
+
+![Thermal: 1.4 W on a 40 mm board, hot spot at the charger, DC drop on the 3V3 pour](docs/gui_thermal.png)
 
 ## Why
 
@@ -52,12 +57,27 @@ Options: `--res` fine cell (mm, default 0.1), `--base` coarse cell, `--fmax`, `-
 `--ref NET` to override the reference net, `--tie NET ...` to treat other nets as reference
 copper (a decoupled rail), `--setup-only` to stop after the checks, `--bench N` for speed.
 
+**Thermal and DC.** `kicad-fdtd thermal board.kicad_pcb --power REF=W ... [--h 10] [--tamb 25] [--cell 0.25]`
+solves steady-state heat conduction on a whole-board grid built from the same exact copper:
+each copper layer is a thin sheet with conductivity scaled by its copper fraction per cell,
+FR4 is anisotropic (0.8 W/mK in plane, 0.3 through), via barrels conduct through the planes,
+component power goes into the cells under the footprint's pads, and both faces lose heat by
+convection `h` to `--tamb` (edges adiabatic, no radiation, nothing above the board: a
+conservative estimate). Add `--net NET --from REF.PAD --to REF.PAD --current A` for a DC
+conduction solve on one net: IR drop, resistance, current density per cell, and the Joule
+heat, which is added to the thermal sources. Output: a report (max temperature and where,
+per-layer maxima, hottest footprints, drop and peak current density) and a JSON with the
+temperature, voltage and current-density maps per copper layer.
+
 **GUI.** `kicad-fdtd gui` then open http://127.0.0.1:8765. Paste a `.kicad_pcb` path and
 press Import (or pick an already exported board), read the stats, pick nets (the detected
 pairs are one click), click pads for ports, **Set up and check**. The view shows the mesh
 window, the mesh, the PEC edge assignment per conductor on any copper layer, the port sites
 and any shorts (red rings; Run stays disabled). **Run on GPU** streams progress, keeps Ez
 snapshots on the plane under the first port (slider, play) and plots S11/S21 and Zin/Zdiff.
+The **Thermal and DC** panel takes component powers (REF=W per line), h, ambient, cell size
+and an optional DC net with source and sink pads; the result overlays temperature, current
+density or DC voltage on any copper layer with a colour bar.
 
 ## How it works
 
@@ -75,8 +95,13 @@ kicad_fdtd/
   kernels.py    six fused CuPy kernels (curl, CPML and ports in one launch each),
                 port V/I read by one kernel; no host sync inside the step loop
   pair.py       setup (mesh + assignment + checks) and solve (S-parameters, Z)
+  thermal.py    whole-board finite-volume grid from the same copper; steady-state heat
+                conduction with convection faces; DC conduction on one net (IR drop, J,
+                Joule heat); Jacobi-preconditioned CG on the GPU (cupyx) or CPU (scipy)
+  cli.py        export | stats | pair | thermal | gui | test
   gui/          standard-library server + one page
-tests/          test_msl.py (microstrip milestone, GPU), test_geometry.py (no GPU)
+tests/          test_msl.py (microstrip milestone, GPU), test_geometry.py and
+                test_thermal.py (analytic checks, no GPU)
 ```
 
 Field quantities are float32; V and I are recorded on the device each step and transformed
@@ -90,6 +115,9 @@ slice-based reference path.
 | 0.2 mm microstrip over 0.1 mm FR4, 50 Ω ports (`tests/test_msl.py`) | S21 −0.06 dB, S11 −18.6 dB, Zin 42 Ω | openEMS 43 Ω, 2D FD cross-section 45 Ω |
 | USB pair on a 4-layer board, 0.15 mm vs 0.1 mm mesh | Zdiff 58 Ω vs 60 Ω | 2D FD cross-section 66 Ω |
 | fused kernels vs slice reference vs pre-fusion code, same mesh | identical step count, S-parameters equal to 1e-6 dB | |
+| copper-clad plate, 1 W, h = 10 W/m²K both faces (`tests/test_thermal.py`) | mean rise 319.6 K | lumped P / (2 h A) = 312.5 K |
+| 0.2 mm × 35 µm track, 1 A over 11.4 mm | 27.7 mV, Joule = I·V | ρ L / (w t) = 27.4 mV |
+| 4-layer 40 mm board, 1.4 W in six parts, natural convection | mean rise 44 K, 79 °C at the charger | P / (2 h A) = 44 K |
 
 The milestone runs in about a second on the GPU and is the regression gate for every
 change to the solver.
@@ -101,11 +129,14 @@ change to the solver.
   the rest of the board is on the base grid. Parts (bodies, connectors) are not modelled.
 - Ports need reference copper under the pad; a trace with no plane below gets no port.
 - Stackups without thicknesses fall back to 1.6 mm FR4 split evenly.
+- Thermal is steady state with a uniform convection coefficient and no radiation, no
+  enclosure, no component bodies: it ranks hot spots and gives a conservative rise, not a
+  datasheet junction temperature. Current density is per grid cell, so a narrow neck is
+  averaged over the cell (use `--cell 0.1` for tracks).
 
 ## Roadmap
 
-- Thermal: steady-state heat conduction on the same copper voxels (component power as
-  sources, convection on the faces) and DC current density / IR drop on the power nets.
+- Transient thermal and a component thermal-resistance model (junction to board).
 - Far field on a Huygens box for emissions against CISPR 32.
 - Conducting-sheet loss, dielectric loss.
 - Whole-board mesh presets and a results archive in the GUI.

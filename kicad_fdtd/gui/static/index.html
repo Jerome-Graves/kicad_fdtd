@@ -83,6 +83,20 @@
       <div class="prog"><div id="prog"></div></div>
       <div class="rep" id="runRep"></div>
     </fieldset>
+    <fieldset>
+      <legend>Thermal and DC</legend>
+      <label><span>component power, REF=W per line</span></label>
+      <textarea id="powers" class="wide" rows="4" placeholder="U5=0.3&#10;U6=0.2" style="background:var(--bg);color:var(--text);border:1px solid var(--line);border-radius:3px;font:inherit;width:100%"></textarea>
+      <div class="hint" id="fpHint"></div>
+      <label><span>convection h W/m²K</span><input id="hconv" type="number" step="1" value="10"></label>
+      <label><span>ambient °C</span><input id="tamb" type="number" step="1" value="25"></label>
+      <label><span>cell mm</span><input id="tcell" type="number" step="0.05" value="0.25"></label>
+      <label><span>DC net</span><input id="dcNet" type="text" placeholder="/VBAT"></label>
+      <label><span>from pad → to pad</span><input id="dcFrom" type="text" placeholder="J2.1" style="width:62px"><input id="dcTo" type="text" placeholder="U5.10" style="width:62px"></label>
+      <label><span>current A</span><input id="dcI" type="number" step="0.1" value="0"></label>
+      <div class="row"><button id="thermBtn" class="primary">Solve thermal</button></div>
+      <div class="rep" id="thermRep"></div>
+    </fieldset>
   </aside>
   <section class="view">
     <div class="bar" id="layerBar">
@@ -92,6 +106,7 @@
       <label><input type="checkbox" id="showPorts" checked> ports</label>
       <label><input type="checkbox" id="showField" checked> field</label>
       <label>floor dB <input id="floor" type="number" value="-40" step="5" style="width:60px"></label>
+      <label><input type="checkbox" id="showTherm"> <select id="thermKind" style="width:auto"><option value="T">temperature</option><option value="J">current density</option><option value="V">DC voltage</option></select> on <select id="thermLayer" style="width:auto"></select></label>
       <button id="fitBtn">fit</button>
       <button id="winBtn">window</button>
     </div>
@@ -159,6 +174,9 @@ async function loadBoard(name, ref) {
   const cands = board.stats.ref_candidates.map(c => c.net); if (!cands.includes(board.ref_net)) cands.unshift(board.ref_net);
   $("refSel").innerHTML = cands.map(n => `<option ${n === board.ref_net ? "selected" : ""}>${n}</option>`).join("") + board.nets.filter(n => !cands.includes(n)).map(n => `<option>${n}</option>`).join("");
   $("pairSel").innerHTML = '<option value="">detected pairs…</option>' + board.stats.diff_pairs.map(p => `<option value="${p[0]}|${p[1]}">${p[0]}  /  ${p[1]}</option>`).join("");
+  therm = null; $("showTherm").checked = false; $("thermRep").textContent = "";
+  const fps = (await api("/api/footprints")).footprints.filter(f => /^[UQDL]/.test(f.ref));
+  $("fpHint").textContent = "e.g. " + fps.slice(0, 12).map(f => `${f.ref} (${f.value})`).join(", ");
   const bar = $("layerBar"); [...bar.querySelectorAll(".lyr")].forEach(e => e.remove());
   board.layers.forEach((L, i) => {
     layerOn[L.name] = layerOn[L.name] ?? true;
@@ -257,8 +275,9 @@ function draw() {
   ctx.globalAlpha = 1;
   // vias
   for (const v of board.vias) { const [X, Y] = W2S(v.x, v.y); ctx.beginPath(); ctx.arc(X, Y, Math.max(1.5, v.r * view.s), 0, 7); ctx.fillStyle = sel.has(v.net) ? "#fff" : "#6b7480"; ctx.fill(); }
-  // field snapshot
+  // field snapshot / thermal overlay
   if ($("showField").checked && curSnap >= 0 && snaps[curSnap] && setup) drawField(snaps[curSnap]);
+  if ($("showTherm").checked && therm) drawTherm();
   if (setup) {
     const [x0, y0, x1, y1] = setup.window; const [X0, Y0] = W2S(x0, y1), [X1, Y1] = W2S(x1, y0);
     ctx.strokeStyle = "#e0b04a"; ctx.setLineDash([6, 4]); ctx.lineWidth = 1; ctx.strokeRect(X0, Y0, X1 - X0, Y1 - Y0); ctx.setLineDash([]);
@@ -320,7 +339,50 @@ function drawField(sn) {
     ctx.beginPath(); for (let k = 0; k < b.length; k += 4) ctx.rect(b[k], b[k + 1], b[k + 2], b[k + 3]); ctx.fill(); });
   ctx.fillStyle = "#d7dbe0"; ctx.font = "11px system-ui"; ctx.fillText(`Ez at z ${sn.z.toFixed(3)} mm, t ${(sn.t * 1e9).toFixed(2)} ns, step ${sn.n}, ${floor} dB floor`, 12, 16);
 }
-["showMesh", "showEdges", "showPorts", "showField", "edgeLayer", "floor"].forEach(id => $(id).onchange = draw);
+["showMesh", "showEdges", "showPorts", "showField", "edgeLayer", "floor", "showTherm", "thermKind", "thermLayer"].forEach(id => $(id).onchange = draw);
+
+// ---------------------------------------------------------------- thermal
+let therm = null;
+function heat(u) {   // 0..1 -> colour (black-body style)
+  const r = Math.min(1, u * 2.2), g = Math.max(0, Math.min(1, u * 2.2 - 0.8)), b = Math.max(0, Math.min(1, u * 4 - 3.2));
+  return `rgb(${Math.round(255 * r)},${Math.round(255 * g)},${Math.round(255 * b)})`;
+}
+function drawTherm() {
+  const kind = $("thermKind").value, layer = $("thermLayer").value;
+  const src = kind === "T" ? therm.T : (therm.dc ? therm.dc[kind] : null); if (!src || !src[layer]) return;
+  const A = src[layer], xs = therm.x, ys = therm.y, nx = xs.length - 1, ny = ys.length - 1;
+  let lo = Infinity, hi = -Infinity;
+  for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) { const v = A[i][j]; if (kind === "V" && v < 0) continue; if (v < lo) lo = v; if (v > hi) hi = v; }
+  if (!(hi > lo)) return;                         // scale from the layer's own min so the gradient is visible
+  const r = cv.getBoundingClientRect(), levels = 24, buckets = Array.from({length: levels}, () => []);
+  for (let i = 0; i < nx; i++) { const [X0] = W2S(xs[i], 0), [X1] = W2S(xs[i + 1], 0); if (X1 < 0 || X0 > r.width) continue;
+    for (let j = 0; j < ny; j++) { const v = A[i][j]; if (kind !== "T" && v <= (kind === "V" ? -0.5 : 0)) continue;
+      const [, Y0] = W2S(0, ys[j + 1]), [, Y1] = W2S(0, ys[j]); if (Y1 < 0 || Y0 > r.height) continue;
+      const lv = Math.min(levels - 1, Math.floor((v - lo) / (hi - lo) * levels)); buckets[lv].push(X0, Y0, X1 - X0 + 0.5, Y1 - Y0 + 0.5); } }
+  ctx.globalAlpha = 0.75;
+  buckets.forEach((b, q) => { if (!b.length) return; ctx.fillStyle = heat((q + 0.5) / levels); ctx.beginPath(); for (let k = 0; k < b.length; k += 4) ctx.rect(b[k], b[k + 1], b[k + 2], b[k + 3]); ctx.fill(); });
+  ctx.globalAlpha = 1;
+  // colour bar
+  const bx = r.width - 28, by = 40, bh = 160;
+  for (let q = 0; q < bh; q++) { ctx.fillStyle = heat(1 - q / bh); ctx.fillRect(bx, by + q, 14, 1); }
+  ctx.fillStyle = "#d7dbe0"; ctx.font = "11px system-ui"; ctx.textAlign = "right";
+  const unit = kind === "T" ? " °C" : kind === "J" ? " A/mm²" : " V";
+  ctx.fillText(hi.toFixed(kind === "V" ? 3 : 1) + unit, bx - 4, by + 10); ctx.fillText(lo.toFixed(kind === "V" ? 3 : 1) + unit, bx - 4, by + bh); ctx.textAlign = "left";
+  ctx.fillText(`${kind === "T" ? "temperature" : kind === "J" ? "current density" : "DC voltage"} on ${layer}`, 12, 32);
+}
+$("thermBtn").onclick = async () => {
+  if (!board) return status("load a board first");
+  const powers = {};
+  $("powers").value.split(/\n|,/).map(s => s.trim()).filter(Boolean).forEach(s => { const [r, w] = s.split("="); if (r && w) powers[r.trim()] = +w; });
+  $("thermBtn").disabled = true; status("solving thermal…"); $("thermRep").textContent = "";
+  try {
+    therm = await api("/api/thermal", {file: $("boardSel").value, ref: $("refSel").value, cell: +$("tcell").value, h: +$("hconv").value, tamb: +$("tamb").value, powers,
+      dc: {net: $("dcNet").value.trim(), src: $("dcFrom").value.trim(), sink: $("dcTo").value.trim(), current: +$("dcI").value}});
+    $("thermLayer").innerHTML = therm.layers.map(l => `<option>${l}</option>`).join("");
+    $("thermRep").textContent = therm.report; $("showTherm").checked = true; $("showField").checked = false; status(`thermal done: max ${therm.Tmax.toFixed(1)} °C`); draw();
+  } catch (e) { const m = e.message.split("\n").filter(Boolean).pop(); status(m); $("thermRep").innerHTML = `<span class="bad">${m}</span>`; }
+  $("thermBtn").disabled = false;
+};
 $("ports").oninput = draw;
 
 // ---------------------------------------------------------------- setup
@@ -405,6 +467,13 @@ function plots() {
   $("resRep").textContent = `${result.pair ? "Zdiff" : "Zin"} median 0.2-2 GHz: ${med(Z).toFixed(0)} ohm\n` +
     [480e6, 1e9, 2e9].map(fq => `${(fq / 1e6).toFixed(0)} MHz: S21 ${at(result.S21_dB, fq).toFixed(2)} dB  S11 ${at(result.S11_dB, fq).toFixed(1)} dB  Z ${at(Z, fq).toFixed(0)} ohm`).join("\n");
 }
+
+// ---------------------------------------------------------------- screenshot to docs/ (README figures)
+window.saveShot = async function (name) {
+  if (!window.html2canvas) await new Promise((ok, err) => { const s = document.createElement("script"); s.src = "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"; s.onload = ok; s.onerror = err; document.head.appendChild(s); });
+  const c = await html2canvas(document.body, {backgroundColor: "#14171c", scale: 1, logging: false});
+  return api("/api/screenshot", {name, data: c.toDataURL("image/png")});
+};
 
 // ---------------------------------------------------------------- boot
 loadBoards().then(async () => {

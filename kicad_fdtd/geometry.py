@@ -90,7 +90,7 @@ class Board:
         for v in self.g["vias"]:
             x, y = self.pt(v["x"], v["y"])
             out.append({"x": x, "y": y, "r": v["dia"] / 2, "zt": self.z.get(v["top"], 0.0), "zb": self.z.get(v["bottom"], self.z_bot),
-                        "net": v["net"], "kind": v["kind"]})
+                        "net": v["net"], "kind": v["kind"], "top": v["top"], "bottom": v["bottom"], "drill": v.get("drill", 0.0)})
         return out
 
     def copper_at(self, layer, x, y):

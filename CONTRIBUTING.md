@@ -4,7 +4,8 @@ Issues and pull requests are welcome. A few ground rules that keep the solver tr
 
 - **Every physics change ships with a check.** `python tests/test_msl.py` (the microstrip milestone)
   must still report S21 within 1 dB of 0, S11 below -12 dB and Zin between 35 and 70 ohm, and
-  `python tests/test_geometry.py` must pass. If you touch the kernels, also run a board with
+  `python tests/test_geometry.py` and `python tests/test_thermal.py` (analytic plate and track
+  checks) must pass. If you touch the kernels, also run a board with
   `FDTD_UNFUSED=1` and compare the S-parameters (they agree to 1e-6 dB today).
 - **No silent fallbacks.** If a port cannot be placed, a stackup is missing, or two conductors
   merge on the mesh, the code says so and refuses to give a number. Keep it that way.
