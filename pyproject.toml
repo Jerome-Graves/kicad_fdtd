@@ -1,0 +1,39 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "kicad-fdtd"
+version = "0.1.0"
+description = "GPU FDTD field solver for KiCad boards: exact copper in, S-parameters, impedance and field views out"
+readme = "README.md"
+license = { text = "MIT" }
+requires-python = ">=3.10"
+authors = [{ name = "Jerome Graves" }]
+keywords = ["kicad", "fdtd", "electromagnetics", "signal-integrity", "pcb", "cupy", "gpu"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: Science/Research",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: Electronic Design Automation (EDA)",
+  "Topic :: Scientific/Engineering :: Physics",
+]
+dependencies = ["numpy>=1.24", "shapely>=2.0"]
+
+[project.optional-dependencies]
+gpu = ["cupy-cuda12x>=13"]
+dev = ["pytest"]
+
+[project.scripts]
+kicad-fdtd = "kicad_fdtd.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Jerome-Graves/kicad_fdtd"
+Issues = "https://github.com/Jerome-Graves/kicad_fdtd/issues"
+
+[tool.setuptools]
+packages = ["kicad_fdtd", "kicad_fdtd.gui"]
+
+[tool.setuptools.package-data]
+"kicad_fdtd.gui" = ["static/*"]

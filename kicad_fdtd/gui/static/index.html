@@ -1,0 +1,428 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>kicad_fdtd</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  :root { --bg:#14171c; --panel:#1c2027; --line:#2c323b; --text:#d7dbe0; --dim:#8a93a0; --acc:#d98c3a; --ok:#5fbf7a; --bad:#e5533d; --warn:#e0b04a; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font: 13px/1.4 "Segoe UI", system-ui, sans-serif; height:100vh; display:grid; grid-template-rows: 42px 1fr; }
+  header { display:flex; align-items:center; gap:14px; padding:0 14px; border-bottom:1px solid var(--line); background:var(--panel); }
+  header h1 { font-size:15px; margin:0; letter-spacing:.04em; color:var(--acc); font-weight:600; }
+  header .st { color:var(--dim); flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  main { display:grid; grid-template-columns: 300px 1fr 360px; min-height:0; }
+  aside { border-right:1px solid var(--line); background:var(--panel); overflow:auto; padding:10px 12px; }
+  aside.right { border-right:0; border-left:1px solid var(--line); }
+  fieldset { border:1px solid var(--line); border-radius:4px; margin:0 0 10px; padding:8px 10px; }
+  legend { color:var(--dim); font-size:11px; letter-spacing:.08em; text-transform:uppercase; padding:0 4px; }
+  label { display:flex; justify-content:space-between; align-items:center; gap:8px; margin:4px 0; color:var(--dim); }
+  label span { flex:1; }
+  input[type=text], input[type=number], select { background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:3px; padding:3px 6px; font:inherit; width:130px; }
+  select[multiple] { width:100%; height:120px; }
+  input.wide { width:100%; }
+  button { background:#2a313b; color:var(--text); border:1px solid #3a4350; border-radius:3px; padding:5px 10px; font:inherit; cursor:pointer; }
+  button:hover { background:#333b47; }
+  button.primary { background:var(--acc); color:#1a1408; border-color:var(--acc); font-weight:600; }
+  button:disabled { opacity:.45; cursor:default; }
+  .row { display:flex; gap:6px; margin-top:6px; }
+  .rep { font-family: Consolas, monospace; font-size:12px; white-space:pre-wrap; color:var(--text); margin-top:6px; }
+  .rep .ok { color:var(--ok); } .rep .bad { color:var(--bad); } .rep .warn { color:var(--warn); }
+  .view { position:relative; min-width:0; min-height:0; display:grid; grid-template-rows: 34px 1fr 34px; }
+  .bar { display:flex; align-items:center; gap:10px; padding:0 10px; border-bottom:1px solid var(--line); color:var(--dim); font-size:12px; flex-wrap:wrap; }
+  .bar label { margin:0; gap:4px; color:var(--text); }
+  .bar .sw { display:inline-block; width:10px; height:10px; border-radius:2px; margin-right:2px; }
+  canvas#board { width:100%; height:100%; display:block; background:#0f1115; cursor:grab; }
+  .bar.bottom { border-bottom:0; border-top:1px solid var(--line); }
+  .bar input[type=range] { flex:1; }
+  .prog { height:6px; background:var(--bg); border-radius:3px; overflow:hidden; margin:6px 0; }
+  .prog div { height:100%; background:var(--acc); width:0; }
+  canvas.plot { width:100%; height:220px; display:block; background:#0f1115; border:1px solid var(--line); border-radius:3px; margin-bottom:10px; }
+  .hint { color:var(--dim); font-size:11px; }
+  .tip { position:absolute; pointer-events:none; background:#000c; color:#fff; padding:2px 6px; border-radius:3px; font-size:11px; display:none; }
+</style>
+</head>
+<body>
+<header>
+  <h1>kicad_fdtd</h1>
+  <input id="pcbPath" type="text" placeholder="path to a .kicad_pcb" style="width:280px">
+  <button id="importBtn">Import</button>
+  <select id="boardSel"></select>
+  <label style="margin:0;gap:6px"><span style="flex:none">ref</span><select id="refSel" style="width:auto"></select></label>
+  <div class="st" id="status">import a board or pick one</div>
+</header>
+<main>
+  <aside>
+    <fieldset>
+      <legend>Nets and ports</legend>
+      <select id="pairSel" class="wide" style="width:100%"><option value="">detected pairs…</option></select>
+      <input id="netFilter" class="wide" type="text" placeholder="filter nets (e.g. USB)">
+      <select id="nets" multiple></select>
+      <div class="hint">one net = single-ended, two = odd mode (P then N)</div>
+      <label><span>ports REF.PAD (P in, P out, N in, N out)</span></label>
+      <input id="ports" class="wide" type="text" placeholder="J1.A6 J9.10 J1.A7 J9.9">
+      <div class="hint">click pads of a selected net to add them</div>
+      <label><span>also treat as reference</span><input id="tie" type="text" value="" placeholder="/3V3 (decoupled rail)"></label>
+    </fieldset>
+    <fieldset>
+      <legend>Mesh</legend>
+      <label><span>fine cell mm</span><input id="res" type="number" step="0.01" value="0.15"></label>
+      <label><span>base cell mm</span><input id="base" type="number" step="0.05" value="0.3"></label>
+      <label><span>window margin mm</span><input id="margin" type="number" step="0.5" value="2.5"></label>
+      <label><span>f max GHz</span><input id="fmax" type="number" step="0.5" value="3"></label>
+      <label><span>port Z0 ohm</span><input id="z0" type="number" step="1" value="50"></label>
+      <div class="row"><button id="setupBtn" class="primary">Set up and check</button></div>
+      <div class="rep" id="setupRep"></div>
+    </fieldset>
+    <fieldset>
+      <legend>Run</legend>
+      <label><span>t max ns</span><input id="tmax" type="number" step="1" value="12"></label>
+      <label><span>end at energy</span><input id="endc" type="number" step="1e-4" value="0.001"></label>
+      <label><span>snapshot every N steps</span><input id="snapEvery" type="number" step="100" value="500"></label>
+      <div class="row"><button id="runBtn" class="primary" disabled>Run on GPU</button><button id="stopBtn" disabled>Stop</button></div>
+      <div class="prog"><div id="prog"></div></div>
+      <div class="rep" id="runRep"></div>
+    </fieldset>
+  </aside>
+  <section class="view">
+    <div class="bar" id="layerBar">
+      <span>layers</span>
+      <label><input type="checkbox" id="showMesh"> mesh</label>
+      <label><input type="checkbox" id="showEdges"> PEC edges on <select id="edgeLayer" style="width:auto"></select></label>
+      <label><input type="checkbox" id="showPorts" checked> ports</label>
+      <label><input type="checkbox" id="showField" checked> field</label>
+      <label>floor dB <input id="floor" type="number" value="-40" step="5" style="width:60px"></label>
+      <button id="fitBtn">fit</button>
+      <button id="winBtn">window</button>
+    </div>
+    <canvas id="board"></canvas>
+    <div class="tip" id="tip"></div>
+    <div class="bar bottom">
+      <button id="playBtn">play</button>
+      <input type="range" id="snapSl" min="0" max="0" value="0">
+      <span id="snapLbl">no snapshots</span>
+    </div>
+  </section>
+  <aside class="right">
+    <fieldset>
+      <legend>Board</legend>
+      <div class="rep" id="stats">no board</div>
+    </fieldset>
+    <fieldset>
+      <legend>S-parameters</legend>
+      <canvas class="plot" id="plotS"></canvas>
+      <canvas class="plot" id="plotZ"></canvas>
+      <div class="rep" id="resRep"></div>
+    </fieldset>
+    <fieldset>
+      <legend>Log</legend>
+      <div class="rep" id="log"></div>
+    </fieldset>
+  </aside>
+</main>
+<script>
+const $ = id => document.getElementById(id);
+const LAYER_COL = {"F.Cu":"#e0603a","In1.Cu":"#4caf50","In2.Cu":"#3f8cff","B.Cu":"#3fb8c8"};
+const ID_COL = ["#ffd54a","#ff6ec7","#5ce1ff","#a3ff5c","#ff9f43","#c77dff","#ffffff","#ff5c5c"];
+let board = null, setup = null, result = null, snaps = {}, snapCount = 0, curSnap = -1, playing = false;
+let view = {s: 8, ox: 40, oy: 40};           // world mm -> screen px:  X = ox + s*x,  Y = oy - s*y
+const cv = $("board"), ctx = cv.getContext("2d");
+const layerOn = {};
+
+async function api(path, body) {
+  const r = await fetch(path, body ? {method:"POST", headers:{"Content-Type":"application/json"}, body: JSON.stringify(body)} : {});
+  const j = await r.json();
+  if (j.error) throw new Error(j.error);
+  return j;
+}
+function status(s) { $("status").textContent = s; }
+function b64i8(s) { const b = atob(s); const a = new Int8Array(b.length); for (let i = 0; i < b.length; i++) a[i] = b.charCodeAt(i); return a; }
+function b64f16(s) {
+  const b = atob(s); const u = new Uint16Array(b.length / 2); for (let i = 0; i < u.length; i++) u[i] = b.charCodeAt(2*i) | (b.charCodeAt(2*i+1) << 8);
+  const out = new Float32Array(u.length);
+  for (let i = 0; i < u.length; i++) { const h = u[i], sgn = (h >> 15) ? -1 : 1, e = (h >> 10) & 31, m = h & 1023;
+    out[i] = e === 0 ? sgn * m * 2**-24 : e === 31 ? (m ? NaN : sgn * Infinity) : sgn * (1 + m / 1024) * 2**(e - 15); }
+  return out;
+}
+
+// ---------------------------------------------------------------- boards
+async function loadBoards() {
+  const j = await api("/api/boards");
+  $("boardSel").innerHTML = '<option value="">board…</option>' + j.files.map(f => `<option>${f.name}</option>`).join("");
+}
+async function loadBoard(name, ref) {
+  status("loading " + name);
+  board = await api("/api/board?file=" + encodeURIComponent(name) + (ref ? "&ref=" + encodeURIComponent(ref) : ""));
+  setup = null; result = null; snaps = {}; snapCount = 0; curSnap = -1;
+  $("nets").innerHTML = board.nets.map(n => `<option>${n}</option>`).join("");
+  $("stats").textContent = board.stats_text;
+  const cands = board.stats.ref_candidates.map(c => c.net); if (!cands.includes(board.ref_net)) cands.unshift(board.ref_net);
+  $("refSel").innerHTML = cands.map(n => `<option ${n === board.ref_net ? "selected" : ""}>${n}</option>`).join("") + board.nets.filter(n => !cands.includes(n)).map(n => `<option>${n}</option>`).join("");
+  $("pairSel").innerHTML = '<option value="">detected pairs…</option>' + board.stats.diff_pairs.map(p => `<option value="${p[0]}|${p[1]}">${p[0]}  /  ${p[1]}</option>`).join("");
+  const bar = $("layerBar"); [...bar.querySelectorAll(".lyr")].forEach(e => e.remove());
+  board.layers.forEach((L, i) => {
+    layerOn[L.name] = layerOn[L.name] ?? true;
+    const lab = document.createElement("label"); lab.className = "lyr";
+    lab.innerHTML = `<input type="checkbox" ${layerOn[L.name] ? "checked" : ""}><span class="sw" style="background:${LAYER_COL[L.name] || '#aaa'}"></span>${L.name}`;
+    lab.querySelector("input").onchange = e => { layerOn[L.name] = e.target.checked; draw(); };
+    bar.insertBefore(lab, $("showMesh").parentElement);
+  });
+  $("edgeLayer").innerHTML = board.layers.map(L => `<option>${L.name}</option>`).join("");
+  $("runBtn").disabled = true; $("setupRep").textContent = ""; $("resRep").textContent = "";
+  fit(); status(`${name}: ${board.w.toFixed(1)} x ${board.h.toFixed(1)} mm, ${board.layers.length} copper layers, ${board.vias.length} vias, ${board.nets.length} nets`);
+}
+$("boardSel").onchange = e => e.target.value && loadBoard(e.target.value).catch(err => status(err.message));
+$("refSel").onchange = e => board && loadBoard($("boardSel").value, e.target.value).catch(err => status(err.message));
+$("pairSel").onchange = e => { if (!e.target.value) return; const [p, n] = e.target.value.split("|");
+  [...$("nets").options].forEach(o => o.selected = (o.text === p || o.text === n)); $("ports").value = ""; draw(); };
+$("importBtn").onclick = async () => {
+  const pcb = $("pcbPath").value.trim(); if (!pcb) return status("give the path of a .kicad_pcb");
+  $("importBtn").disabled = true; status("exporting with KiCad's Python…");
+  try { const j = await api("/api/export", {pcb}); await loadBoards(); $("boardSel").value = j.name; await loadBoard(j.name); }
+  catch (e) { status(e.message.split("\n").filter(Boolean).pop()); }
+  $("importBtn").disabled = false;
+};
+$("netFilter").oninput = e => { const f = e.target.value.toLowerCase(); [...$("nets").options].forEach(o => o.hidden = f && !o.text.toLowerCase().includes(f)); };
+$("nets").onchange = draw;
+
+// ---------------------------------------------------------------- view
+function resize() { const r = cv.getBoundingClientRect(); cv.width = r.width * devicePixelRatio; cv.height = r.height * devicePixelRatio; draw(); }
+window.addEventListener("resize", resize);
+function fit() {
+  if (!board) return;
+  const r = cv.getBoundingClientRect();
+  view.s = Math.min((r.width - 40) / board.w, (r.height - 40) / board.h);
+  view.ox = (r.width - view.s * board.w) / 2; view.oy = (r.height - view.s * board.h) / 2;   // model y runs 0 (top) .. -h
+  draw();
+}
+$("fitBtn").onclick = fit;
+function zoomWindow() {
+  if (!setup) return;
+  const [x0, y0, x1, y1] = setup.window; const r = cv.getBoundingClientRect();
+  view.s = Math.min(r.width / (x1 - x0), r.height / (y1 - y0)) * 0.95;
+  view.ox = r.width / 2 - view.s * (x0 + x1) / 2; view.oy = r.height / 2 + view.s * (y0 + y1) / 2; draw();
+}
+$("winBtn").onclick = zoomWindow;
+const W2S = (x, y) => [view.ox + view.s * x, view.oy - view.s * y];
+const S2W = (X, Y) => [(X - view.ox) / view.s, (view.oy - Y) / view.s];
+cv.addEventListener("wheel", e => { e.preventDefault(); const r = cv.getBoundingClientRect(); const [wx, wy] = S2W(e.clientX - r.left, e.clientY - r.top);
+  view.s *= e.deltaY < 0 ? 1.15 : 1 / 1.15; view.ox = e.clientX - r.left - view.s * wx; view.oy = e.clientY - r.top + view.s * wy; draw(); }, {passive:false});
+let drag = null;
+cv.addEventListener("mousedown", e => { drag = {x: e.clientX, y: e.clientY, ox: view.ox, oy: view.oy, moved: false}; });
+window.addEventListener("mousemove", e => {
+  if (drag) { view.ox = drag.ox + e.clientX - drag.x; view.oy = drag.oy + e.clientY - drag.y; if (Math.hypot(e.clientX - drag.x, e.clientY - drag.y) > 3) drag.moved = true; draw(); return; }
+  hover(e);
+});
+window.addEventListener("mouseup", e => { if (drag && !drag.moved) clickPad(e); drag = null; });
+function nearestPad(e) {
+  if (!board) return null;
+  const r = cv.getBoundingClientRect(); const [wx, wy] = S2W(e.clientX - r.left, e.clientY - r.top);
+  let best = null, bd = 0.6;
+  for (const p of board.pads) { const d = Math.hypot(p.x - wx, p.y - wy); if (d < bd) { bd = d; best = p; } }
+  return best;
+}
+function hover(e) {
+  const p = nearestPad(e); const t = $("tip");
+  if (!p) { t.style.display = "none"; return; }
+  t.style.display = "block"; t.style.left = (e.clientX + 12) + "px"; t.style.top = (e.clientY + 12) + "px";
+  t.textContent = `${p.ref}.${p.num}  ${p.net}  [${p.layers.join(",")}]`;
+}
+function clickPad(e) {
+  const p = nearestPad(e); if (!p) return;
+  const sel = selectedNets();
+  if (!sel.includes(p.net)) { status(`${p.ref}.${p.num} is on ${p.net}, not a selected net`); return; }
+  const cur = $("ports").value.trim(); $("ports").value = (cur ? cur + " " : "") + `${p.ref}.${p.num}`; draw();
+}
+const selectedNets = () => [...$("nets").selectedOptions].map(o => o.text);
+
+function poly(ctx, pts) { ctx.moveTo(...W2S(pts[0][0], pts[0][1])); for (let i = 1; i < pts.length; i++) ctx.lineTo(...W2S(pts[i][0], pts[i][1])); ctx.closePath(); }
+function draw() {
+  if (!board) return;
+  ctx.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0);
+  const r = cv.getBoundingClientRect(); ctx.clearRect(0, 0, r.width, r.height);
+  const sel = new Set(selectedNets());
+  // outline
+  ctx.beginPath(); poly(ctx, board.outline); ctx.fillStyle = "#1b1f26"; ctx.fill(); ctx.strokeStyle = "#5a6473"; ctx.lineWidth = 1; ctx.stroke();
+  // copper, bottom layer first
+  for (let li = board.layers.length - 1; li >= 0; li--) {
+    const L = board.layers[li]; if (!layerOn[L.name]) continue;
+    const col = LAYER_COL[L.name] || "#aaa";
+    for (const P of L.polys) {
+      const mine = sel.has(P.net);
+      ctx.beginPath(); poly(ctx, P.ext); for (const h of P.holes) poly(ctx, h);
+      ctx.fillStyle = col; ctx.globalAlpha = mine ? 0.9 : (P.kind === "zone" ? 0.18 : 0.45); ctx.fill("evenodd");
+      if (mine) { ctx.globalAlpha = 1; ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke(); }
+    }
+  }
+  ctx.globalAlpha = 1;
+  // vias
+  for (const v of board.vias) { const [X, Y] = W2S(v.x, v.y); ctx.beginPath(); ctx.arc(X, Y, Math.max(1.5, v.r * view.s), 0, 7); ctx.fillStyle = sel.has(v.net) ? "#fff" : "#6b7480"; ctx.fill(); }
+  // field snapshot
+  if ($("showField").checked && curSnap >= 0 && snaps[curSnap] && setup) drawField(snaps[curSnap]);
+  if (setup) {
+    const [x0, y0, x1, y1] = setup.window; const [X0, Y0] = W2S(x0, y1), [X1, Y1] = W2S(x1, y0);
+    ctx.strokeStyle = "#e0b04a"; ctx.setLineDash([6, 4]); ctx.lineWidth = 1; ctx.strokeRect(X0, Y0, X1 - X0, Y1 - Y0); ctx.setLineDash([]);
+    if ($("showMesh").checked && view.s * 0.05 > 0.6) {
+      ctx.strokeStyle = "#ffffff22"; ctx.lineWidth = 1; ctx.beginPath();
+      for (const x of setup.lines.x) { const [X] = W2S(x, 0); if (X < 0 || X > r.width) continue; ctx.moveTo(X, Y0); ctx.lineTo(X, Y1); }
+      for (const y of setup.lines.y) { const [, Y] = W2S(0, y); if (Y < 0 || Y > r.height) continue; ctx.moveTo(X0, Y); ctx.lineTo(X1, Y); }
+      ctx.stroke();
+    }
+    if ($("showEdges").checked) drawEdges();
+    if ($("showPorts").checked) for (const s of setup.sites) {
+      const [X, Y] = W2S(s.x, s.y); ctx.strokeStyle = "#ffd54a"; ctx.lineWidth = 2; ctx.strokeRect(X - 5, Y - 5, 10, 10);
+      ctx.fillStyle = "#ffd54a"; ctx.font = "11px system-ui"; ctx.fillText(`${s.name} (${s.sig}/${s.plane})`, X + 8, Y - 6);
+    }
+    for (const s of setup.shorts) { const [X, Y] = W2S(s[2], s[3]); ctx.strokeStyle = "#e5533d"; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(X, Y, 7, 0, 7); ctx.stroke(); }
+  } else {
+    // pads of the selected nets, so ports can be picked
+    for (const p of board.pads) if (sel.has(p.net)) { const [X, Y] = W2S(p.x, p.y); ctx.fillStyle = "#ffd54a"; ctx.fillRect(X - 3, Y - 3, 6, 6); }
+  }
+  // ports typed but not set up yet
+  const wanted = $("ports").value.trim().split(/\s+/).filter(Boolean);
+  for (const rp of wanted) { const [ref, num] = rp.split("."); const p = board.pads.find(q => q.ref === ref && q.num === num); if (!p) continue;
+    const [X, Y] = W2S(p.x, p.y); ctx.strokeStyle = "#ffd54a"; ctx.lineWidth = 1; ctx.strokeRect(X - 6, Y - 6, 12, 12); }
+}
+function drawEdges() {
+  const A = setup.assign.find(a => a.layer === $("edgeLayer").value); if (!A) return;
+  if (!A._ex) { A._ex = b64i8(A.ex); A._ey = b64i8(A.ey); }
+  const xs = setup.lines.x, ys = setup.lines.y, nx = xs.length, ny = ys.length;
+  const r = cv.getBoundingClientRect();
+  const byId = {};
+  for (let i = 0; i < nx - 1; i++) { const [X0] = W2S(xs[i], 0), [X1] = W2S(xs[i + 1], 0); if (X1 < 0 || X0 > r.width) continue;
+    for (let j = 0; j < ny; j++) { const id = A._ex[i * ny + j]; if (id < 0) continue; const [, Y] = W2S(0, ys[j]); if (Y < 0 || Y > r.height) continue;
+      (byId[id] = byId[id] || []).push(X0, Y, X1, Y); } }
+  for (let i = 0; i < nx; i++) { const [X] = W2S(xs[i], 0); if (X < 0 || X > r.width) continue;
+    for (let j = 0; j < ny - 1; j++) { const id = A._ey[i * (ny - 1) + j]; if (id < 0) continue; const [, Y0] = W2S(0, ys[j]), [, Y1] = W2S(0, ys[j + 1]); if (Y0 < 0 || Y1 > r.height) continue;
+      (byId[id] = byId[id] || []).push(X, Y0, X, Y1); } }
+  ctx.lineWidth = 1.2;
+  for (const id in byId) { ctx.strokeStyle = ID_COL[id % ID_COL.length]; ctx.beginPath(); const s = byId[id]; for (let q = 0; q < s.length; q += 4) { ctx.moveTo(s[q], s[q + 1]); ctx.lineTo(s[q + 2], s[q + 3]); } ctx.stroke(); }
+  // legend
+  let X = 12, Y = r.height - 14; ctx.font = "11px system-ui";
+  setup.names.forEach((n, id) => { ctx.fillStyle = ID_COL[id % ID_COL.length]; ctx.fillRect(X, Y - 8, 10, 10); ctx.fillStyle = "#d7dbe0"; ctx.fillText(n, X + 14, Y); X += 24 + ctx.measureText(n).width; });
+}
+function drawField(sn) {
+  const xs = setup.lines.x, ys = setup.lines.y, nx = xs.length, ny = ys.length;
+  const d = sn.data; let mx = 0; for (let q = 0; q < d.length; q++) { const a = Math.abs(d[q]); if (a > mx) mx = a; }
+  if (!(mx > 0)) return;
+  const floor = parseFloat($("floor").value) || -40, levels = 32;
+  const buckets = new Array(2 * levels).fill(null).map(() => []);
+  const r = cv.getBoundingClientRect();
+  for (let i = 0; i < nx - 1; i++) { const [X0] = W2S(xs[i], 0), [X1] = W2S(xs[i + 1], 0); if (X1 < 0 || X0 > r.width) continue;
+    for (let j = 0; j < ny - 1; j++) {
+      const v = d[i * ny + j]; const db = 20 * Math.log10(Math.abs(v) / mx + 1e-12); if (db < floor) continue;
+      const [, Y0] = W2S(0, ys[j + 1]), [, Y1] = W2S(0, ys[j]); if (Y1 < 0 || Y0 > r.height) continue;
+      const lv = Math.min(levels - 1, Math.floor((db - floor) / -floor * levels));
+      buckets[(v > 0 ? levels : 0) + lv].push(X0, Y0, X1 - X0 + 0.5, Y1 - Y0 + 0.5);
+    } }
+  buckets.forEach((b, q) => { if (!b.length) return; const pos = q >= levels, lv = q % levels, a = 0.15 + 0.85 * lv / levels;
+    ctx.fillStyle = pos ? `rgba(255,${Math.round(140 - 100 * lv / levels)},60,${a})` : `rgba(60,${Math.round(160 - 100 * lv / levels)},255,${a})`;
+    ctx.beginPath(); for (let k = 0; k < b.length; k += 4) ctx.rect(b[k], b[k + 1], b[k + 2], b[k + 3]); ctx.fill(); });
+  ctx.fillStyle = "#d7dbe0"; ctx.font = "11px system-ui"; ctx.fillText(`Ez at z ${sn.z.toFixed(3)} mm, t ${(sn.t * 1e9).toFixed(2)} ns, step ${sn.n}, ${floor} dB floor`, 12, 16);
+}
+["showMesh", "showEdges", "showPorts", "showField", "edgeLayer", "floor"].forEach(id => $(id).onchange = draw);
+$("ports").oninput = draw;
+
+// ---------------------------------------------------------------- setup
+$("setupBtn").onclick = async () => {
+  const nets = selectedNets(); if (!nets.length) return status("select one or two nets");
+  const ports = $("ports").value.trim().split(/\s+/).filter(Boolean); if (!ports.length) return status("give the port pads");
+  $("setupBtn").disabled = true; status("meshing and checking…"); $("setupRep").textContent = "";
+  try {
+    setup = await api("/api/setup", {file: $("boardSel").value, ref: $("refSel").value, nets, ports, res: +$("res").value, base: +$("base").value, margin: +$("margin").value,
+      fmax: +$("fmax").value * 1e9, z0: +$("z0").value, tie: $("tie").value.split(/\s+/).filter(Boolean)});
+    const L = setup.lines; const steps = Math.round(+$("tmax").value * 1e-9 / setup.dt);
+    const rep = [`mesh ${L.x.length} x ${L.y.length} x ${L.z.length} = ${(setup.cells / 1e6).toFixed(2)} Mcells`,
+      `smallest cell ${setup.dmin.map(v => (v * 1e3).toFixed(3)).join("/")} mm, dt ${(setup.dt * 1e15).toFixed(0)} fs`,
+      `${steps} steps for ${$("tmax").value} ns, ${setup.n_via} vias`,
+      ...setup.sites.map(s => `port ${s.name} at (${s.x.toFixed(2)}, ${s.y.toFixed(2)}) ${s.sig} over ${s.plane} (${s.ref})${s.shift ? ` shifted ${s.shift.toFixed(1)} mm` : ""}`)];
+    const html = rep.join("\n") + "\n" + (setup.n_shorts ? `<span class="bad">MERGE CHECK: ${setup.n_shorts} node(s) join the pair to another conductor (red rings)</span>` : `<span class="ok">MERGE CHECK: clean</span>`);
+    $("setupRep").innerHTML = html;
+    $("runBtn").disabled = setup.n_shorts > 0; result = null; snaps = {}; snapCount = 0; curSnap = -1; $("snapSl").max = 0;
+    status(setup.n_shorts ? "shorted model, fix the geometry or ports" : "ready to run");
+    draw();
+  } catch (e) { status(e.message.split("\n").filter(Boolean).pop()); $("setupRep").innerHTML = `<span class="bad">${e.message}</span>`; }
+  $("setupBtn").disabled = false;
+};
+
+// ---------------------------------------------------------------- run
+let poll = null;
+$("runBtn").onclick = async () => {
+  await api("/api/run", {tmax: +$("tmax").value * 1e-9, end: +$("endc").value, snap_every: +$("snapEvery").value});
+  $("runBtn").disabled = true; $("stopBtn").disabled = false; $("setupBtn").disabled = true; result = null; snaps = {}; snapCount = 0;
+  poll = setInterval(pollStatus, 500);
+};
+$("stopBtn").onclick = () => api("/api/stop");
+async function pollStatus() {
+  const st = await api("/api/status");
+  if (st.step !== undefined) {
+    const pct = st.nsteps ? 100 * st.step / st.nsteps : 0; $("prog").style.width = pct + "%";
+    $("runRep").textContent = `step ${st.step} / ${st.nsteps}  energy ${st.energy_db.toFixed(1)} dB  ${st.elapsed.toFixed(0)} s  ${st.speed.toFixed(0)} Mcell/s`;
+  }
+  $("log").textContent = (st.log || []).join("\n");
+  if (st.snapshots !== snapCount) { snapCount = st.snapshots; $("snapSl").max = Math.max(0, snapCount - 1); if (!playing) { $("snapSl").value = snapCount - 1; showSnap(snapCount - 1); } }
+  if (!st.running) {
+    clearInterval(poll); $("runBtn").disabled = false; $("stopBtn").disabled = true; $("setupBtn").disabled = false;
+    if (st.error) { status("run failed"); $("runRep").innerHTML = `<span class="bad">${st.error}</span>`; return; }
+    if (st.has_result) { result = await api("/api/result"); status(`done: ${result.steps} steps in ${result.wall.toFixed(0)} s (${result.speed.toFixed(0)} Mcell/s)`); plots(); }
+    else status("stopped");
+  }
+}
+async function showSnap(i) {
+  if (i < 0) return;
+  if (!snaps[i]) { const s = await api("/api/snap?i=" + i); s.data = b64f16(s.data); snaps[i] = s; }
+  curSnap = i; $("snapLbl").textContent = `snapshot ${i + 1}/${snapCount}, ${(snaps[i].t * 1e9).toFixed(2)} ns`; draw();
+}
+$("snapSl").oninput = e => showSnap(+e.target.value);
+$("playBtn").onclick = () => { playing = !playing; $("playBtn").textContent = playing ? "pause" : "play"; if (playing) step(); };
+async function step() { if (!playing) return; let i = (+$("snapSl").value + 1) % Math.max(1, snapCount); $("snapSl").value = i; await showSnap(i); setTimeout(step, 120); }
+
+// ---------------------------------------------------------------- plots
+function plot(canvas, series, yl, ylabel, xlabel) {
+  const c = canvas.getContext("2d"); const r = canvas.getBoundingClientRect(); canvas.width = r.width * devicePixelRatio; canvas.height = r.height * devicePixelRatio;
+  c.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); c.clearRect(0, 0, r.width, r.height);
+  const m = {l: 42, r: 10, t: 10, b: 24}, w = r.width - m.l - m.r, h = r.height - m.t - m.b;
+  const xs = series[0].x, x0 = xs[0], x1 = xs[xs.length - 1];
+  const X = x => m.l + (x - x0) / (x1 - x0) * w, Y = y => m.t + (yl[1] - y) / (yl[1] - yl[0]) * h;
+  c.strokeStyle = "#2c323b"; c.fillStyle = "#8a93a0"; c.font = "10px system-ui"; c.lineWidth = 1;
+  for (let g = 0; g <= 4; g++) { const y = yl[0] + (yl[1] - yl[0]) * g / 4; c.beginPath(); c.moveTo(m.l, Y(y)); c.lineTo(m.l + w, Y(y)); c.stroke(); c.fillText(y.toFixed(0), 4, Y(y) + 3); }
+  for (let g = 0; g <= 5; g++) { const x = x0 + (x1 - x0) * g / 5; c.beginPath(); c.moveTo(X(x), m.t); c.lineTo(X(x), m.t + h); c.stroke(); c.fillText((x / 1e9).toFixed(1), X(x) - 8, r.height - 8); }
+  c.fillText(ylabel, m.l + 4, m.t + 10); c.fillText(xlabel, m.l + w - 30, r.height - 8);
+  let lx = m.l + 60;
+  for (const s of series) { c.strokeStyle = s.col; c.lineWidth = 1.5; c.beginPath();
+    s.x.forEach((x, i) => { const y = Math.max(yl[0], Math.min(yl[1], s.y[i])); i ? c.lineTo(X(x), Y(y)) : c.moveTo(X(x), Y(y)); }); c.stroke();
+    c.fillStyle = s.col; c.fillText(s.name, lx, m.t + 10); lx += c.measureText(s.name).width + 14; }
+}
+function plots() {
+  if (!result) return;
+  const f = result.f;
+  plot($("plotS"), [{x: f, y: result.S11_dB, col: "#ff6ec7", name: "S11"}, {x: f, y: result.S21_dB, col: "#5ce1ff", name: "S21"}], [-40, 0], "dB", "GHz");
+  const Z = result.pair ? result.Zdiff_re : result.Z_re;
+  plot($("plotZ"), [{x: f, y: Z, col: "#ffd54a", name: result.pair ? "Zdiff (odd mode)" : "Zin"}], [0, 150], "ohm", "GHz");
+  const sel = f.map((v, i) => i).filter(i => f[i] > 2e8 && f[i] < 2e9);
+  const med = a => { const s = sel.map(i => a[i]).sort((p, q) => p - q); return s[Math.floor(s.length / 2)]; };
+  const at = (arr, fq) => arr[f.reduce((b, v, i) => Math.abs(v - fq) < Math.abs(f[b] - fq) ? i : b, 0)];
+  $("resRep").textContent = `${result.pair ? "Zdiff" : "Zin"} median 0.2-2 GHz: ${med(Z).toFixed(0)} ohm\n` +
+    [480e6, 1e9, 2e9].map(fq => `${(fq / 1e6).toFixed(0)} MHz: S21 ${at(result.S21_dB, fq).toFixed(2)} dB  S11 ${at(result.S11_dB, fq).toFixed(1)} dB  Z ${at(Z, fq).toFixed(0)} ohm`).join("\n");
+}
+
+// ---------------------------------------------------------------- boot
+loadBoards().then(async () => {
+  resize();
+  const st = await api("/api/status");
+  if (st.has_setup) {                       // the server still holds the last setup: restore it after a reload
+    const s = await api("/api/setup");
+    $("boardSel").value = s.file; await loadBoard(s.file, s.ref);
+    [...$("nets").options].forEach(o => o.selected = s.nets.includes(o.text));
+    $("ports").value = s.ports.join(" "); $("tie").value = s.tie.join(" ");
+    setup = s; $("runBtn").disabled = s.n_shorts > 0; $("setupRep").innerHTML = `restored: ${(s.cells / 1e6).toFixed(2)} Mcells, ` + (s.n_shorts ? `<span class="bad">${s.n_shorts} shorts</span>` : `<span class="ok">merge check clean</span>`);
+    snapCount = st.snapshots; $("snapSl").max = Math.max(0, snapCount - 1);
+    if (st.has_result) { result = await api("/api/result"); plots(); status(`done: ${result.steps} steps in ${result.wall.toFixed(0)} s (${result.speed.toFixed(0)} Mcell/s)`); }
+    if (snapCount) showSnap(snapCount - 1);
+    zoomWindow();
+  }
+  if (st.running) { $("stopBtn").disabled = false; $("runBtn").disabled = true; poll = setInterval(pollStatus, 500); }
+});
+</script>
+</body>
+</html>
