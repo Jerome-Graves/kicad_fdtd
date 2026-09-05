@@ -19,6 +19,8 @@ kicad-fdtd gui                                             # everything above in
 
 ## In the browser, no install
 
+![The web app: the Motion board's USB pair after a WebGPU run, with the PEC edge assignment per conductor, the odd-mode field and the S-parameter plots](docs/webapp.png)
+
 **https://jeromegraves.com/kicad_fdtd/** runs the whole tool on your own machine: drop a
 `.kicad_pcb` on the page (nothing is uploaded), get the stats, pick nets and pads, mesh and
 check, run the field solver on your GPU through WebGPU (Chrome or Edge; other browsers fall
