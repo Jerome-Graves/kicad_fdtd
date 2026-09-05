@@ -65,7 +65,23 @@ function setBoard(v, name) {
 const esc = s => String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 $("openBtn").onclick = () => $("file").click();
 $("file").onchange = async e => { const f = e.target.files[0]; if (f) loadText(await f.text(), f.name); };
-$("exampleBtn").onclick = async () => { const r = await fetch("examples/microstrip.kicad_pcb"); loadText(await r.text(), "microstrip.kicad_pcb"); $("ports").value = "P1.1 P2.1"; };
+// examples with presets (docs/examples/index.json): loading one fills every panel
+let EXAMPLES = [];
+fetch("examples/index.json").then(r => r.json()).then(list => { EXAMPLES = list; $("exampleSel").innerHTML = '<option value="">Examples…</option>' + list.map(e => `<option value="${e.id}">${esc(e.title)}</option>`).join(""); const want = new URLSearchParams(location.search).get("example"); if (want) loadExample(want); }).catch(() => {});
+$("exampleSel").onchange = e => { if (e.target.value) loadExample(e.target.value); };
+async function loadExample(id) {
+  const ex = EXAMPLES.find(x => x.id === id); if (!ex) return;
+  const r = await fetch(ex.file); await loadText(await r.text(), ex.file.split("/").pop());
+  if (!board) return;
+  [...$("nets").options].forEach(o => o.selected = ex.nets.includes(o.text));
+  $("ports").value = ex.ports; $("tie").value = ex.tie || "";
+  $("res").value = ex.res; $("base").value = ex.base; $("fmax").value = ex.fmax; $("tmax").value = ex.tmax;
+  $("emcOn").checked = !!ex.emc;
+  if (ex.emc) { $("emcClk").value = ex.emc.clk; $("emcA").value = ex.emc.A; $("emcTr").value = ex.emc.tr; $("emcDuty").value = ex.emc.duty; $("emcGap").value = ex.emc.gap; $("emcNf").value = ex.emc.nf; }
+  $("powers").value = ex.powers || ""; $("tcell").value = ex.tcell || 0.25;
+  $("dcNet").value = ex.dc?.net || ""; $("dcFrom").value = ex.dc?.from || ""; $("dcTo").value = ex.dc?.to || ""; $("dcI").value = ex.dc?.current || 0;
+  status(`${ex.title}: nets, ports and settings filled in; press Set up and check`); draw();
+}
 document.addEventListener("dragover", e => { e.preventDefault(); });
 document.addEventListener("drop", async e => { e.preventDefault(); const f = e.dataTransfer.files[0]; if (f) loadText(await f.text(), f.name); });
 $("refSel").onchange = async e => { if (!board) return; const r = await call({ type: "ref", ref: e.target.value }); setBoard(r.view, board.name); };

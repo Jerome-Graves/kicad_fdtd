@@ -29,13 +29,15 @@ try {
   await send("Page.navigate", { url });
   await sleep(2500);
   const emc = opt.emc ? opt.emc.split(",") : null;
-  console.log(await evalJs(`(async () => { try {
-    const $ = id => document.getElementById(id);
+  const setupJs = opt.example ? `for (let i = 0; i < 200; i++) { await new Promise(r => setTimeout(r, 250)); if (window.kf.board && $("ports").value) break; }` : `
     const text = await (await fetch(${JSON.stringify(opt.board)})).text();
     await window.kf.loadText(text, ${JSON.stringify(path.basename(opt.board))});
     const ps = $("pairSel"); ps.value = ${JSON.stringify(opt.pair)}; ps.dispatchEvent(new Event("change"));
     $("ports").value = ${JSON.stringify(opt.ports)}; $("res").value = ${JSON.stringify(opt.res)}; $("base").value = ${JSON.stringify(opt.base)}; $("tie").value = ${JSON.stringify(opt.tie)};
-    ${emc ? `$("emcOn").checked = true; $("emcClk").value = "${emc[0]}"; $("emcA").value = "${emc[1]}"; $("emcTr").value = "${emc[2]}";` : ""}
+    ${emc ? `$("emcOn").checked = true; $("emcClk").value = "${emc[0]}"; $("emcA").value = "${emc[1]}"; $("emcTr").value = "${emc[2]}";` : ""}`;
+  console.log(await evalJs(`(async () => { try {
+    const $ = id => document.getElementById(id);
+    ${setupJs}
     $("setupBtn").click();
     for (let i = 0; i < 400; i++) { await new Promise(r => setTimeout(r, 250)); if (window.kf.setup) break; }
     $("runBtn").click();
@@ -43,7 +45,8 @@ try {
     $("showEdges").checked = true; $("edgeLayer").value = ${JSON.stringify(opt.layer)}; $("showMesh").checked = false;
     $("snapSl").value = ${+opt.snap}; window.kf.showSnap(${+opt.snap}); window.kf.zoomWindow();
     ${emc ? `$("emcBox").scrollIntoView(); document.querySelector("aside").scrollTop = $("emcRep").offsetTop - 60;` : ""}
-    return $("status").textContent + " | " + $("resRep").innerText.split("\\n")[0] + " | " + $("engine").textContent + " | " + ($("emcRep").innerText.split("\\n").pop() || "");
+    ${opt.therm ? `$("thermBtn").click(); for (let i = 0; i < 400; i++) { await new Promise(r => setTimeout(r, 250)); if (window.kf.therm) break; } $("showTherm").checked = ${opt.therm === "show"}; $("thermLayer").value = ${JSON.stringify(opt.layer)}; window.kf.draw();` : ""}
+    return $("status").textContent + " | " + $("resRep").innerText.split("\\n")[0] + " | " + $("engine").textContent + " | " + ($("emcRep").innerText.split("\\n").pop() || "") + " | " + ($("thermRep").innerText.split("\\n").slice(1, 2).join("") || "") + " | " + ($("thermRep").innerText.split("\\n").pop() || "");
   } catch (e) { return "PAGE ERROR " + (e.stack || e.message); } })()`));
   await sleep(1000);
   const shot = await send("Page.captureScreenshot", { format: "png" });

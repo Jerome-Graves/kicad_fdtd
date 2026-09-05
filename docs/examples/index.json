@@ -1,0 +1,50 @@
+[
+  {
+    "id": "demo-pair",
+    "title": "Demo board: 100 ohm clock pair (signal integrity)",
+    "file": "examples/demo.kicad_pcb",
+    "nets": ["/CLK_P", "/CLK_N"],
+    "ports": "J1.1 U1.1 J1.2 U1.2",
+    "tie": "/3V3",
+    "res": 0.1, "base": 0.2, "fmax": 3, "tmax": 12,
+    "emc": false,
+    "powers": "U1=0.5\nU2=0.3",
+    "dc": { "net": "/3V3", "from": "U2.3", "to": "U1.7", "current": 0.5 },
+    "tcell": 0.2
+  },
+  {
+    "id": "demo-emc",
+    "title": "Demo board: CLKOUT line, 3.3 V 100 MHz clock (emissions)",
+    "file": "examples/demo.kicad_pcb",
+    "nets": ["/CLKOUT"],
+    "ports": "U1.5 J2.1",
+    "tie": "/3V3",
+    "res": 0.15, "base": 0.3, "fmax": 3, "tmax": 40,
+    "emc": { "clk": 100, "A": 3.3, "tr": 1.0, "duty": 0.5, "gap": 5, "nf": 15 },
+    "powers": "U1=0.5\nU2=0.3",
+    "dc": { "net": "/3V3", "from": "U2.3", "to": "U1.7", "current": 0.5 },
+    "tcell": 0.2
+  },
+  {
+    "id": "microstrip",
+    "title": "Microstrip milestone (50 ohm line, 2 layers)",
+    "file": "examples/microstrip.kicad_pcb",
+    "nets": ["/SIG"],
+    "ports": "P1.1 P2.1",
+    "tie": "",
+    "res": 0.1, "base": 0.2, "fmax": 3, "tmax": 12,
+    "emc": false,
+    "powers": "", "dc": { "net": "", "from": "", "to": "", "current": 0 }, "tcell": 0.25
+  },
+  {
+    "id": "patch",
+    "title": "Patch antenna at 1.84 GHz (far-field validation)",
+    "file": "examples/patch.kicad_pcb",
+    "nets": ["/ANT"],
+    "ports": "P1.1",
+    "tie": "",
+    "res": 0.5, "base": 1.0, "fmax": 3, "tmax": 60,
+    "emc": { "clk": 1840, "A": 1.0, "tr": 0.1, "duty": 0.5, "gap": 5, "nf": 15 },
+    "powers": "", "dc": { "net": "", "from": "", "to": "", "current": 0 }, "tcell": 0.5
+  }
+]

@@ -85,6 +85,14 @@ heat, which is added to the thermal sources. Output: a report (max temperature a
 per-layer maxima, hottest footprints, drop and peak current density) and a JSON with the
 temperature, voltage and current-density maps per copper layer.
 
+**Examples with presets (web app).** The *Examples* menu loads a board and fills every panel:
+the demo board (`docs/examples/demo.kicad_pcb`, 4 layers, a 100 Ω clock pair from a connector
+to an MCU, a single-ended clock line to a header, an LDO feeding the MCU through a 3V3 pour on
+In2, two heat sources) in a signal-integrity preset and an emissions preset, the microstrip
+milestone, and the patch antenna. `?example=demo-pair` in the URL does the same.
+
+![Demo board preset: the clock pair meshed and checked, its odd-mode impedance, the temperature overlay from the LDO and MCU powers, and the DC drop on the 3V3 pour](docs/webapp_demo.png)
+
 **GUI.** `kicad-fdtd gui` then open http://127.0.0.1:8765. Paste a `.kicad_pcb` path and
 press Import (or pick an already exported board), read the stats, pick nets (the detected
 pairs are one click), click pads for ports, **Set up and check**. The view shows the mesh
