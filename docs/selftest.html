@@ -26,7 +26,7 @@ try {
   const win = q.get("whole") !== null ? [-2.5, -bd.h - 2.5, bd.w + 2.5, 2.5] : bd.netBBox(nets, 2.5);
   const tie = {}; for (const n of (q.get("tie") || "").split(",").filter(Boolean)) tie[n] = bd.refNet;
   const sites = ports.map(rp => { const [ref, num] = rp.split("."); const s = bd.portSite(ref, num, tie); if (!s) throw new Error("no port site " + rp); say(`port ${rp} at (${s.x.toFixed(2)}, ${s.y.toFixed(2)}) ${s.sig} over ${s.plane} (${s.ref})`); return s; });
-  const boxes = sites.map(s => { const z1 = Math.min(bd.z[s.plane], bd.z[s.sig]), z2 = Math.max(bd.z[s.plane], bd.z[s.sig]); return [[s.x - PORT_W / 2, s.y - PORT_W / 2, z1], [s.x + PORT_W / 2, s.y + PORT_W / 2, z2]]; });
+  const boxes = sites.map(s => { const z1 = Math.min(bd.z[s.plane], bd.z[s.sig]), z2 = Math.max(bd.z[s.plane], bd.z[s.sig]); const w = s.w || PORT_W; return [[s.x - w / 2, s.y - w / 2, z1], [s.x + w / 2, s.y + w / 2, z2]]; });
   const airGap = +(q.get("gap") || (q.get("nf2ff") !== null ? 5 : 0));
   const lines_ = buildMesh(bd, nets, win, { res, base, tie, portBoxes: boxes, airGap, airGapCell: +(q.get("gapcell") || 0.5) });
   const vox = assign(bd, lines_, tie, sites.map(s => [s.x, s.y]), win);

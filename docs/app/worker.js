@@ -45,8 +45,9 @@ self.onmessage = async e => {
         s.name = rp;
         const z1 = Math.min(bd.z[s.plane], bd.z[s.sig]), z2 = Math.max(bd.z[s.plane], bd.z[s.sig]);
         s.z0 = z1; s.z1 = z2;
-        sites.push(s); boxes.push([[s.x - PORT_W / 2, s.y - PORT_W / 2, z1], [s.x + PORT_W / 2, s.y + PORT_W / 2, z2]]);
-        log.push(`port ${rp} at (${s.x.toFixed(2)}, ${s.y.toFixed(2)}) ${s.sig} over ${s.plane} (${s.ref})${s.shift ? ` shifted ${s.shift.toFixed(1)} mm` : ""}`);
+        const w = s.w || PORT_W;
+        sites.push(s); boxes.push([[s.x - w / 2, s.y - w / 2, z1], [s.x + w / 2, s.y + w / 2, z2]]);
+        log.push(`port ${rp} at (${s.x.toFixed(2)}, ${s.y.toFixed(2)}) ${s.sig} over ${s.plane} (${s.ref})${s.shift ? ` shifted ${s.shift.toFixed(1)} mm` : ""}${w !== PORT_W ? ` face ${w} mm` : ""}`);
       }
       const lines = buildMesh(bd, nets, window, { res: m.res, base: m.base, tie, portBoxes: boxes, airGap: m.airGap || 0 });
       const vox = assign(bd, lines, tie, sites.map(s => [s.x, s.y]), window);

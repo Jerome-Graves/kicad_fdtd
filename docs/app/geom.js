@@ -218,7 +218,13 @@ export class Board {
     for (const [sig, planes] of sides) for (const j of planes) out.push([sig, this.layers[j]]);
     return out;
   }
-  portSite(ref, num, tie = {}, maxShift = 3.5, w = PORT_W, refNet = null) {
+  portSite(ref, num, tie = {}, maxShift = 3.5, w0 = PORT_W, refNet = null) {
+    // the port face must sit entirely on the signal copper: try the standard face first, then
+    // smaller faces so that thin traces (0.15 mm) still get a port
+    for (const w of [w0, 0.1, 0.06]) { const s = this._portSite(ref, num, tie, maxShift, w, refNet); if (s) { s.w = w; return s; } }
+    return null;
+  }
+  _portSite(ref, num, tie, maxShift, w, refNet) {
     const pnet = refNet || this.refNet;
     const [p, [x0, y0]] = this.pad(ref, num);
     const net = p.net;
