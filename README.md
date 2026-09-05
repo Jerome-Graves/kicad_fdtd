@@ -17,6 +17,20 @@ kicad-fdtd gui                                             # everything above in
 
 ![Thermal: 1.4 W on a 40 mm board, hot spot at the charger, DC drop on the 3V3 pour](docs/gui_thermal.png)
 
+## In the browser, no install
+
+**https://jeromegraves.com/kicad_fdtd/** runs the whole tool on your own machine: drop a
+`.kicad_pcb` on the page (nothing is uploaded), get the stats, pick nets and pads, mesh and
+check, run the field solver on your GPU through WebGPU (Chrome or Edge; other browsers fall
+back to a slow JavaScript engine), and solve thermal and IR drop. The browser build in
+`docs/app/` is a line-for-line port of the Python package: its own `.kicad_pcb` reader
+(checked against pcbnew's polygons on real boards, pad positions to the micron), the same
+mesh, edge assignment and merge check, the same six kernels in WGSL, and the same
+finite-volume thermal/DC solver. On the same board and mesh it returns the same Zdiff as the
+Python/CuPy solver and runs at the same speed (3.2 Gcell-updates/s on an RTX 4070).
+`docs/selftest.html?board=...&nets=...&ports=...` runs the pipeline headlessly;
+`tests/web/*.mjs` compare the JavaScript modules with the Python results.
+
 ## Why
 
 Every field solver hides the same three failure modes: copper assigned to the wrong
@@ -118,6 +132,8 @@ slice-based reference path.
 | copper-clad plate, 1 W, h = 10 W/m²K both faces (`tests/test_thermal.py`) | mean rise 319.6 K | lumped P / (2 h A) = 312.5 K |
 | 0.2 mm × 35 µm track, 1 A over 11.4 mm | 27.7 mV, Joule = I·V | ρ L / (w t) = 27.4 mV |
 | 4-layer 40 mm board, 1.4 W in six parts, natural convection | mean rise 44 K, 79 °C at the charger | P / (2 h A) = 44 K |
+| browser build vs Python: USB pair, same 0.15 mm mesh | Zdiff 58 Ω, 3.2 Gcell/s (WebGPU) | Zdiff 58 Ω, 3.2 Gcell/s (CuPy) |
+| browser build vs Python: thermal and DC on the same board | 79.2 °C, 7.8 mV | 78.9 °C, 7.8 mV |
 
 The milestone runs in about a second on the GPU and is the regression gate for every
 change to the solver.

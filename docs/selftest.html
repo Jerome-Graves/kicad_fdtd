@@ -1,0 +1,55 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>kicad_fdtd self-test</title>
+<style>body{font:13px Consolas,monospace;background:#14171c;color:#d7dbe0;padding:16px} .ok{color:#5fbf7a} .bad{color:#e5533d}</style></head>
+<body><pre id="out">running</pre>
+<script type="module">
+// Full pipeline on the example board (or ?board=URL&nets=A,B&ports=..), WebGPU if present.
+// Reference for the microstrip milestone from the Python solver: S21 -0.06 dB, S11 -18.6 dB, Zin 42 ohm.
+import { readKicadPcb } from "./app/kicad.js";
+import { Board, PORT_W } from "./app/geom.js";
+import { buildMesh, cflDt } from "./app/mesh.js";
+import { assign, mergeCheck } from "./app/voxel.js";
+import { Model, CpuEngine, GpuEngine, run, gaussPulse, sParams } from "./app/fdtd.js";
+const out = document.getElementById("out"), lines = [];
+const say = s => { lines.push(s); out.textContent = lines.join("\n"); };
+const q = new URLSearchParams(location.search);
+try {
+  const url = q.get("board") || "examples/microstrip.kicad_pcb";
+  const nets = (q.get("nets") || "/SIG").split(",");
+  const ports = (q.get("ports") || "P1.1,P2.1").split(",");
+  const res = +(q.get("res") || 0.1), base = +(q.get("base") || 0.2), fmax = +(q.get("fmax") || 3e9), tmax = +(q.get("tmax") || 12e-9), end = +(q.get("end") || 1e-3);
+  const text = await (await fetch(url)).text();
+  const t0 = performance.now();
+  const bd = new Board(readKicadPcb(text), q.get("ref") || null);
+  say(`board ${url}: ${bd.w.toFixed(1)} x ${bd.h.toFixed(1)} mm, ${bd.layers.length} layers, ref ${bd.refNet} (${(performance.now() - t0).toFixed(0)} ms)`);
+  const win = bd.netBBox(nets, 2.5);
+  const tie = {}; for (const n of (q.get("tie") || "").split(",").filter(Boolean)) tie[n] = bd.refNet;
+  const sites = ports.map(rp => { const [ref, num] = rp.split("."); const s = bd.portSite(ref, num, tie); if (!s) throw new Error("no port site " + rp); say(`port ${rp} at (${s.x.toFixed(2)}, ${s.y.toFixed(2)}) ${s.sig} over ${s.plane} (${s.ref})`); return s; });
+  const boxes = sites.map(s => { const z1 = Math.min(bd.z[s.plane], bd.z[s.sig]), z2 = Math.max(bd.z[s.plane], bd.z[s.sig]); return [[s.x - PORT_W / 2, s.y - PORT_W / 2, z1], [s.x + PORT_W / 2, s.y + PORT_W / 2, z2]]; });
+  const lines_ = buildMesh(bd, nets, win, { res, base, tie, portBoxes: boxes });
+  const vox = assign(bd, lines_, tie, sites.map(s => [s.x, s.y]), win);
+  const shorts = mergeCheck(vox, lines_, nets, tie);
+  const cells = lines_.x.length * lines_.y.length * lines_.z.length;
+  say(`mesh ${lines_.x.length} x ${lines_.y.length} x ${lines_.z.length} = ${(cells / 1e6).toFixed(2)} Mcells, vias ${vox.nVia}, shorts ${shorts.length}`);
+  if (shorts.length) throw new Error("shorted model");
+  const erOfZ = z => { for (const [zt, zb, er] of bd.diel) if (zb <= z && z <= zt) return er; return 1.0; };
+  const M = new Model(lines_, vox, erOfZ);
+  const pair = nets.length === 2, excOf = pair ? [1, 0, -1, 0] : [1, 0, 0, 0];
+  boxes.forEach(([s, e], i) => M.addPort(s[0], e[0], s[1], e[1], s[2], e[2], 50, i < excOf.length ? excOf[i] : 0));
+  const gpu = await GpuEngine.available();
+  const engine = gpu && q.get("cpu") === null ? new GpuEngine(M) : new CpuEngine(M);
+  await engine.init();
+  say(`engine ${engine instanceof GpuEngine ? "WebGPU " + (engine.adapterInfo ? [engine.adapterInfo.vendor, engine.adapterInfo.architecture].join(" ") : "") : "CPU"}, dt ${(M.dt * 1e15).toFixed(1)} fs`);
+  const exc = gaussPulse(fmax / 2, fmax / 2);
+  const nsteps = Math.floor(tmax / M.dt);
+  const r = await run(M, engine, exc.f, nsteps, { end, onProgress: p => { if (p.step % 2000 === 0) say(`step ${p.step} energy ${p.energyDb.toFixed(1)} dB ${p.elapsed.toFixed(1)} s`); } });
+  say(`done: ${r.steps} steps in ${r.wall.toFixed(1)} s = ${(r.steps * cells / r.wall / 1e6).toFixed(0)} Mcell-updates/s`);
+  const f = []; for (let i = 0; i < 300; i++) f.push(100e6 + (fmax - 100e6) * i / 299);
+  const S = sParams(M.spectra(f), pair);
+  const at = (arr, fq) => arr[f.reduce((b, v, i) => Math.abs(v - fq) < Math.abs(f[b] - fq) ? i : b, 0)];
+  const sel = f.map((v, i) => i).filter(i => f[i] > 2e8 && f[i] < 2e9).map(i => S.Z_re[i]).sort((a, b) => a - b);
+  say(`RESULT: ${pair ? "Zdiff" : "Zin"} median ${sel[sel.length >> 1].toFixed(0)} ohm | 1 GHz: S21 ${at(S.S21_dB, 1e9).toFixed(2)} dB S11 ${at(S.S11_dB, 1e9).toFixed(1)} dB | 480 MHz: S21 ${at(S.S21_dB, 480e6).toFixed(2)} S11 ${at(S.S11_dB, 480e6).toFixed(1)} Z ${at(S.Z_re, 480e6).toFixed(0)} | 2 GHz: S21 ${at(S.S21_dB, 2e9).toFixed(2)} S11 ${at(S.S11_dB, 2e9).toFixed(1)} Z ${at(S.Z_re, 2e9).toFixed(0)}`);
+  engine.destroy();
+} catch (e) { say("ERROR " + (e.stack || e.message)); }
+say("DONE");
+</script></body></html>
