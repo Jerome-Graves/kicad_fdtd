@@ -102,7 +102,9 @@ The result is the field per volt driven into port 1 at each frequency, the harmo
 trapezoid clock you specify (frequency, amplitude, rise time, duty) in dBµV/m against the
 CISPR 32 class B limit, and a plot. The report also prints radiated over accepted power per
 frequency: on a lossless board it must be close to 1 where the board accepts power; if it is
-well below 1 the run stopped before the ring-down ended (raise t max). Validation: a patch
+well below 1 the run stopped before the ring-down ended (raise t max). ![Emissions: the Vision board's CSI clock pair driven as a 500 MHz, 0.2 V differential clock, whole board meshed, harmonics against the CISPR 32 class B limit, worst margin +18.8 dB](docs/webapp_emc.png)
+
+Validation: a patch
 antenna example (`docs/examples/patch.kicad_pcb`) gives 1.00 to 1.06 across its resonance,
 and the port bookkeeping balances the field energy in a closed box to 0.3 %
 (`tests/web/check_energy.mjs`, `tests/web/check_flux.mjs`). Caveats: the source spectrum is
