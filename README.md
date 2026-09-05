@@ -95,6 +95,21 @@ The **Thermal and DC** panel takes component powers (REF=W per line), h, ambient
 and an optional DC net with source and sink pads; the result overlays temperature, current
 density or DC voltage on any copper layer with a colour bar.
 
+**Emissions (far field).** Tick *compute the far field* before *Set up*: the whole board is
+meshed with an air gap around it, and during the run the tangential fields on a Huygens box
+in that gap are transformed to the far field (equivalent currents, peak over a sphere, 3 m).
+The result is the field per volt driven into port 1 at each frequency, the harmonics of a
+trapezoid clock you specify (frequency, amplitude, rise time, duty) in dBµV/m against the
+CISPR 32 class B limit, and a plot. The report also prints radiated over accepted power per
+frequency: on a lossless board it must be close to 1 where the board accepts power; if it is
+well below 1 the run stopped before the ring-down ended (raise t max). Validation: a patch
+antenna example (`docs/examples/patch.kicad_pcb`) gives 1.00 to 1.06 across its resonance,
+and the port bookkeeping balances the field energy in a closed box to 0.3 %
+(`tests/web/check_energy.mjs`, `tests/web/check_flux.mjs`). Caveats: the source spectrum is
+a clean trapezoid on one net (common-mode paths through cables and the rest of the product
+are not modelled), and the limit compared is the peak-detector line, so a pass here is a
+necessary condition, not a certification.
+
 ## How it works
 
 ```
@@ -136,6 +151,8 @@ slice-based reference path.
 | 4-layer 40 mm board, 1.4 W in six parts, natural convection | mean rise 44 K, 79 °C at the charger | P / (2 h A) = 44 K |
 | browser build vs Python: USB pair, same 0.15 mm mesh | Zdiff 58 Ω, 3.2 Gcell/s (WebGPU) | Zdiff 58 Ω, 3.2 Gcell/s (CuPy) |
 | browser build vs Python: thermal and DC on the same board | 79.2 °C, 7.8 mV | 78.9 °C, 7.8 mV |
+| lumped port energy vs field energy, closed PEC box, patch example | equal to 0.3 % over 2.5 ns | energy conservation |
+| far field: radiated vs accepted power, patch at 1.78 to 1.90 GHz, 80 ns window | 1.00 to 1.06 | 1 (lossless) |
 
 The milestone runs in about a second on the GPU and is the regression gate for every
 change to the solver.
@@ -155,7 +172,7 @@ change to the solver.
 ## Roadmap
 
 - Transient thermal and a component thermal-resistance model (junction to board).
-- Far field on a Huygens box for emissions against CISPR 32.
+- Far field in the Python package too (today it is in the browser build only).
 - Conducting-sheet loss, dielectric loss.
 - Whole-board mesh presets and a results archive in the GUI.
 

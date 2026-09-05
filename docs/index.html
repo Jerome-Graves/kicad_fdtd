@@ -92,6 +92,18 @@
       <div class="rep" id="runRep"></div>
     </fieldset>
     <fieldset>
+      <legend>Emissions (far field)</legend>
+      <label><input type="checkbox" id="emcOn"><span>compute the far field during the run (tick before Set up: meshes the whole board with air around it)</span></label>
+      <label><span>air gap mm</span><input id="emcGap" type="number" step="1" value="5"></label>
+      <label><span>clock MHz</span><input id="emcClk" type="number" step="1" value="480"></label>
+      <label><span>amplitude V</span><input id="emcA" type="number" step="0.1" value="1"></label>
+      <label><span>rise time ns</span><input id="emcTr" type="number" step="0.1" value="0.5"></label>
+      <label><span>duty</span><input id="emcDuty" type="number" step="0.05" value="0.5"></label>
+      <label><span>frequencies</span><input id="emcNf" type="number" step="1" value="15"></label>
+      <div class="hint">the source waveform drives port 1; harmonics are compared with CISPR 32 class B at 3 m (peak)</div>
+      <div class="rep" id="emcRep"></div>
+    </fieldset>
+    <fieldset>
       <legend>Thermal and DC</legend>
       <label><span>component power, REF=W per line</span></label>
       <textarea id="powers" class="wide" rows="4" placeholder="U1=0.5&#10;U3=0.3"></textarea>
@@ -130,6 +142,7 @@
   <aside class="right">
     <fieldset><legend>Board</legend><div class="rep" id="stats">no board</div></fieldset>
     <fieldset><legend>S-parameters</legend><canvas class="plot" id="plotS"></canvas><canvas class="plot" id="plotZ"></canvas><div class="rep" id="resRep"></div></fieldset>
+    <fieldset id="emcBox" hidden><legend>Emissions at 3 m</legend><canvas class="plot" id="plotE"></canvas></fieldset>
     <fieldset><legend>Log</legend><div class="rep" id="log"></div></fieldset>
   </aside>
 </main>

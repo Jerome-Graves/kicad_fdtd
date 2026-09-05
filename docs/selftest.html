@@ -6,10 +6,11 @@
 // Full pipeline on the example board (or ?board=URL&nets=A,B&ports=..), WebGPU if present.
 // Reference for the microstrip milestone from the Python solver: S21 -0.06 dB, S11 -18.6 dB, Zin 42 ohm.
 import { readKicadPcb } from "./app/kicad.js";
-import { Board, PORT_W } from "./app/geom.js";
+import { Board, PORT_W, pointInPoly } from "./app/geom.js";
 import { buildMesh, cflDt } from "./app/mesh.js";
 import { assign, mergeCheck } from "./app/voxel.js";
-import { Model, CpuEngine, GpuEngine, run, gaussPulse, sParams } from "./app/fdtd.js";
+import { Model, CpuEngine, GpuEngine, run, gaussPulse, sParams, portPower } from "./app/fdtd.js";
+import { nf2ffSurface, farField, emissions } from "./app/nf2ff.js";
 const out = document.getElementById("out"), lines = [];
 const say = s => { lines.push(s); out.textContent = lines.join("\n"); };
 const q = new URLSearchParams(location.search);
@@ -22,31 +23,50 @@ try {
   const t0 = performance.now();
   const bd = new Board(readKicadPcb(text), q.get("ref") || null);
   say(`board ${url}: ${bd.w.toFixed(1)} x ${bd.h.toFixed(1)} mm, ${bd.layers.length} layers, ref ${bd.refNet} (${(performance.now() - t0).toFixed(0)} ms)`);
-  const win = bd.netBBox(nets, 2.5);
+  const win = q.get("whole") !== null ? [-2.5, -bd.h - 2.5, bd.w + 2.5, 2.5] : bd.netBBox(nets, 2.5);
   const tie = {}; for (const n of (q.get("tie") || "").split(",").filter(Boolean)) tie[n] = bd.refNet;
   const sites = ports.map(rp => { const [ref, num] = rp.split("."); const s = bd.portSite(ref, num, tie); if (!s) throw new Error("no port site " + rp); say(`port ${rp} at (${s.x.toFixed(2)}, ${s.y.toFixed(2)}) ${s.sig} over ${s.plane} (${s.ref})`); return s; });
   const boxes = sites.map(s => { const z1 = Math.min(bd.z[s.plane], bd.z[s.sig]), z2 = Math.max(bd.z[s.plane], bd.z[s.sig]); return [[s.x - PORT_W / 2, s.y - PORT_W / 2, z1], [s.x + PORT_W / 2, s.y + PORT_W / 2, z2]]; });
-  const lines_ = buildMesh(bd, nets, win, { res, base, tie, portBoxes: boxes });
+  const airGap = +(q.get("gap") || (q.get("nf2ff") !== null ? 5 : 0));
+  const lines_ = buildMesh(bd, nets, win, { res, base, tie, portBoxes: boxes, airGap, airGapCell: +(q.get("gapcell") || 0.5) });
   const vox = assign(bd, lines_, tie, sites.map(s => [s.x, s.y]), win);
   const shorts = mergeCheck(vox, lines_, nets, tie);
   const cells = lines_.x.length * lines_.y.length * lines_.z.length;
   say(`mesh ${lines_.x.length} x ${lines_.y.length} x ${lines_.z.length} = ${(cells / 1e6).toFixed(2)} Mcells, vias ${vox.nVia}, shorts ${shorts.length}`);
   if (shorts.length) throw new Error("shorted model");
   const erOfZ = z => { for (const [zt, zb, er] of bd.diel) if (zb <= z && z <= zt) return er; return 1.0; };
-  const M = new Model(lines_, vox, erOfZ);
+  const M = new Model(lines_, vox, erOfZ, { insideXY: (x, y) => pointInPoly(bd.outline, x, y) });
   const pair = nets.length === 2, excOf = pair ? [1, 0, -1, 0] : [1, 0, 0, 0];
-  boxes.forEach(([s, e], i) => M.addPort(s[0], e[0], s[1], e[1], s[2], e[2], 50, i < excOf.length ? excOf[i] : 0));
+  const Z0 = +(q.get("z0") || 50);
+  boxes.forEach(([s, e], i) => M.addPort(s[0], e[0], s[1], e[1], s[2], e[2], Z0, i < excOf.length ? excOf[i] : 0));
   const gpu = await GpuEngine.available();
   const engine = gpu && q.get("cpu") === null ? new GpuEngine(M) : new CpuEngine(M);
   await engine.init();
   say(`engine ${engine instanceof GpuEngine ? "WebGPU " + (engine.adapterInfo ? [engine.adapterInfo.vendor, engine.adapterInfo.architecture].join(" ") : "") : "CPU"}, dt ${(M.dt * 1e15).toFixed(1)} fs`);
   const exc = gaussPulse(fmax / 2, fmax / 2);
   const nsteps = Math.floor(tmax / M.dt);
-  const r = await run(M, engine, exc.f, nsteps, { end, onProgress: p => { if (p.step % 2000 === 0) say(`step ${p.step} energy ${p.energyDb.toFixed(1)} dB ${p.elapsed.toFixed(1)} s`); } });
-  say(`done: ${r.steps} steps in ${r.wall.toFixed(1)} s = ${(r.steps * cells / r.wall / 1e6).toFixed(0)} Mcell-updates/s`);
+  let nf2ff = null;
+  if (q.get("nf2ff") !== null) { const surf = nf2ffSurface(M, { spacing: +(q.get("spacing") || 0.5e-3), inset: lines_.gapInset }); const nf = +(q.get("nf") || 15); const ff0 = +(q.get("ff0") || 0.2e9), ff1 = +(q.get("ff1") || fmax); nf2ff = { surf, nf, f0: ff0, df: (ff1 - ff0) / (nf - 1) }; say(`far-field box ${surf.npts} points at inset ${lines_.gapInset} (air gap ${airGap} mm), ${nf} frequencies ${(ff0 / 1e9).toFixed(2)}-${(ff1 / 1e9).toFixed(2)} GHz`); }
+  const r = await run(M, engine, exc.f, nsteps, { end, nf2ff, onProgress: p => { if (p.step % 2000 === 0) say(`step ${p.step} energy ${p.energyDb.toFixed(1)} dB ${p.elapsed.toFixed(1)} s`); } });
+  const amax = a => { let m = 0; for (let i = 0; i < a.length; i++) if (Math.abs(a[i]) > m) m = Math.abs(a[i]); return m; };
+  say(`done: ${r.steps} steps in ${r.wall.toFixed(1)} s = ${(r.steps * cells / r.wall / 1e6).toFixed(0)} Mcell-updates/s; port 1 |V| max ${amax(M.ports[0].V).toExponential(2)} V, |I| max ${amax(M.ports[0].I).toExponential(2)} A, final energy ${r.energyDb.toFixed(1)} dB`);
+  { const V = M.ports[0].V, I = M.ports[0].I; let W = 0, Wsrc = 0; const R = M.ports[0].R; for (let n = 0; n < V.length; n++) { W += V[n] * I[n] * M.dt; } say(`energy delivered by port 1 into the structure: ${W.toExponential(3)} J (time-domain sum of V I dt)`); }
+  if (q.get("trace") !== null) { const V = M.ports[0].V, I = M.ports[0].I; const idx = []; for (let n = 0; n < V.length; n += Math.max(1, Math.floor(V.length / 25))) idx.push(n); say("V(t): " + idx.map(n => `${n}:${V[n].toExponential(2)}`).join(" ")); say("I(t): " + idx.map(n => `${n}:${I[n].toExponential(2)}`).join(" ")); let im = 0; for (let n = 0; n < V.length; n++) if (Math.abs(V[n]) > Math.abs(V[im])) im = n; say(`|V| max at step ${im} of ${V.length}`); }
+  if (nf2ff) {
+    const t1 = performance.now();
+    const freqs = []; for (let i = 0; i < nf2ff.nf; i++) freqs.push(nf2ff.f0 + i * nf2ff.df);
+    const ff = farField(nf2ff.surf, r.acc, nf2ff.nf, nf2ff.f0, nf2ff.df, { r: 3.0, dTheta: +(q.get("dth") || 15), dPhi: +(q.get("dth") || 15), dt: M.dt });
+    const pp = portPower(M.spectra(freqs));
+    say(`far field in ${((performance.now() - t1) / 1000).toFixed(1)} s`);
+    freqs.forEach((f, i) => say(`  ${(f / 1e9).toFixed(2)} GHz: Emax ${(ff.Emax[i] / pp.Vinc[i]).toExponential(2)} V/m per V at 3 m, dir ${ff.dirMax[i]}, Prad/Pacc ${(ff.Prad[i] / pp.Pacc[i]).toFixed(2)}, Pflux/Pacc ${(ff.Pflux[i] / pp.Pacc[i]).toFixed(2)}`));
+    const T = freqs.map((f, i) => ff.Emax[i] / pp.Vinc[i]);
+    const em = emissions(freqs, T, { A: +(q.get("A") || 1), f0: +(q.get("clk") || 480e6), tr: +(q.get("tr") || 0.5e-9), duty: 0.5 }, fmax);
+    say("clock " + (q.get("clk") || 480e6) + " Hz, " + (q.get("A") || 1) + " V, tr " + (q.get("tr") || 0.5e-9) + " s -> " + em.map(h => `${(h.f / 1e6).toFixed(0)} MHz ${h.dBuV.toFixed(1)} dBuV/m (limit ${h.limit}, margin ${h.margin.toFixed(1)})`).join("; "));
+  }
   const f = []; for (let i = 0; i < 300; i++) f.push(100e6 + (fmax - 100e6) * i / 299);
   const S = sParams(M.spectra(f), pair);
   const at = (arr, fq) => arr[f.reduce((b, v, i) => Math.abs(v - fq) < Math.abs(f[b] - fq) ? i : b, 0)];
+  { let im = 0; for (let i = 1; i < f.length; i++) if (S.S11_dB[i] < S.S11_dB[im]) im = i; say(`S11 minimum ${S.S11_dB[im].toFixed(1)} dB at ${(f[im] / 1e9).toFixed(3)} GHz; curve: ` + f.filter((v, i) => i % 15 === 0).map((v, i) => `${(v / 1e9).toFixed(2)}:${S.S11_dB[i * 15].toFixed(1)}`).join(" ")); }
   const sel = f.map((v, i) => i).filter(i => f[i] > 2e8 && f[i] < 2e9).map(i => S.Z_re[i]).sort((a, b) => a - b);
   say(`RESULT: ${pair ? "Zdiff" : "Zin"} median ${sel[sel.length >> 1].toFixed(0)} ohm | 1 GHz: S21 ${at(S.S21_dB, 1e9).toFixed(2)} dB S11 ${at(S.S11_dB, 1e9).toFixed(1)} dB | 480 MHz: S21 ${at(S.S21_dB, 480e6).toFixed(2)} S11 ${at(S.S11_dB, 480e6).toFixed(1)} Z ${at(S.Z_re, 480e6).toFixed(0)} | 2 GHz: S21 ${at(S.S21_dB, 2e9).toFixed(2)} S11 ${at(S.S11_dB, 2e9).toFixed(1)} Z ${at(S.Z_re, 2e9).toFixed(0)}`);
   engine.destroy();

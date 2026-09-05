@@ -2,6 +2,7 @@
 // kernels.py). Two engines with one interface: WebGPU (six fused compute kernels, CPML and
 // ports inside them, port V/I read on the device) and a plain-JS reference for machines
 // without WebGPU (same arithmetic, ~100x slower).
+import { accumulateCpu } from "./nf2ff.js";
 export const C0 = 299792458.0, EPS0 = 8.8541878128e-12, MU0 = 1.25663706212e-6, ETA0 = 376.730313668;
 
 export function gaussPulse(f0, fc) {
@@ -11,7 +12,9 @@ export function gaussPulse(f0, fc) {
 
 // ---------------------------------------------------------------- model (coefficients on the CPU)
 export class Model {
-  constructor(lines, vox, erOfZ, { npml = 8, cfl = 0.99 } = {}) {
+  // erOfZ(z_mm): permittivity of the board's dielectric layers; insideXY(x_mm, y_mm): true inside the board
+  // outline (outside it the layers are air, so a Huygens surface beyond the board sits in free space)
+  constructor(lines, vox, erOfZ, { npml = 8, cfl = 0.99, insideXY = null } = {}) {
     const x = Float64Array.from(lines.x, v => v * 1e-3), y = Float64Array.from(lines.y, v => v * 1e-3), z = Float64Array.from(lines.z, v => v * 1e-3);
     this.x = x; this.y = y; this.z = z;
     const nx = x.length, ny = y.length, nz = z.length;
@@ -24,10 +27,21 @@ export class Model {
     this.erCell = erCell;
     const erPlane = new Float64Array(nz); for (let k = 0; k < nz; k++) erPlane[k] = (k < nz - 1 ? erCell[k] : 1) / 2 + (k > 0 ? erCell[k - 1] : 1) / 2;
     const cEplane = Float32Array.from(erPlane, e => this.dt / (EPS0 * e)), cEcell = Float32Array.from(erCell, e => this.dt / (EPS0 * e));
+    const cAir = this.dt / EPS0;
+    // in-plane mask: which (x, y) cells and nodes lie inside the board outline (all of them when no outline is given)
+    const cellIn = new Uint8Array((nx - 1) * (ny - 1)).fill(1), nodeIn = new Uint8Array(nx * ny).fill(1);
+    if (insideXY) {
+      for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny - 1; j++) cellIn[i * (ny - 1) + j] = insideXY((x[i] + x[i + 1]) / 2 * 1e3, (y[j] + y[j + 1]) / 2 * 1e3) ? 1 : 0;
+      for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) nodeIn[i * ny + j] = insideXY(x[i] * 1e3, y[j] * 1e3) ? 1 : 0;
+    }
+    // an edge bordering the outline gets the average of its neighbouring cells' permittivity
+    const exIn = (i, j) => (((j > 0 ? cellIn[i * (ny - 1) + j - 1] : 1) + (j < ny - 1 ? cellIn[i * (ny - 1) + j] : 1)) / 2);
+    const eyIn = (i, j) => (((i > 0 ? cellIn[(i - 1) * (ny - 1) + j] : 1) + (i < nx - 1 ? cellIn[i * (ny - 1) + j] : 1)) / 2);
+    const mix = (cIn, frac) => 1 / (frac / cIn + (1 - frac) / cAir);     // coefficient of the averaged permittivity (c = dt / eps)
     this.cEx = new Float32Array((nx - 1) * ny * nz); this.cEy = new Float32Array(nx * (ny - 1) * nz); this.cEz = new Float32Array(nx * ny * (nz - 1));
-    for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nz; k++) { const q = (i * ny + j) * nz + k; this.cEx[q] = vox.ex[q] >= 0 ? 0 : cEplane[k]; }
-    for (let i = 0; i < nx; i++) for (let j = 0; j < ny - 1; j++) for (let k = 0; k < nz; k++) { const q = (i * (ny - 1) + j) * nz + k; this.cEy[q] = vox.ey[q] >= 0 ? 0 : cEplane[k]; }
-    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nz - 1; k++) { const q = (i * ny + j) * (nz - 1) + k; this.cEz[q] = vox.ez[q] >= 0 ? 0 : cEcell[k]; }
+    for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny; j++) { const fr = exIn(i, j); for (let k = 0; k < nz; k++) { const q = (i * ny + j) * nz + k; this.cEx[q] = vox.ex[q] >= 0 ? 0 : (fr >= 1 ? cEplane[k] : mix(cEplane[k], fr)); } }
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny - 1; j++) { const fr = eyIn(i, j); for (let k = 0; k < nz; k++) { const q = (i * (ny - 1) + j) * nz + k; this.cEy[q] = vox.ey[q] >= 0 ? 0 : (fr >= 1 ? cEplane[k] : mix(cEplane[k], fr)); } }
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) { const fr = nodeIn[i * ny + j]; for (let k = 0; k < nz - 1; k++) { const q = (i * ny + j) * (nz - 1) + k; this.cEz[q] = vox.ez[q] >= 0 ? 0 : (fr ? cEcell[k] : cAir); } }
     this.cH = this.dt / MU0;
     this.idx = Float32Array.from(dx, v => 1 / v); this.idy = Float32Array.from(dy, v => 1 / v); this.idz = Float32Array.from(dz, v => 1 / v);
     this.iddx = Float32Array.from(ddx, v => 1 / v); this.iddy = Float32Array.from(ddy, v => 1 / v); this.iddz = Float32Array.from(ddz, v => 1 / v);
@@ -37,6 +51,7 @@ export class Model {
   _setupCpml(dx, dy, dz) {
     const n = this.npml, m = 3.0, amax = 0.05, dt = this.dt;
     this.pml = {};                         // (axis, kind) -> {b, c} concatenated lo (n) + hi reversed (n)
+    if (n === 0) { for (const ax of "xyz") for (const kd of "he") this.pml[ax + kd] = { b: new Float32Array(0), c: new Float32Array(0) }; return; }
     for (const [axis, d] of [["x", dx], ["y", dy], ["z", dz]]) {
       const coef = (rho, smax) => {
         const b = new Float32Array(rho.length), c = new Float32Array(rho.length);
@@ -58,9 +73,13 @@ export class Model {
   }
   addPort(x0, x1, y0, y1, z0, z1, R, excite = 0) {           // mm
     const xl = this.x, yl = this.y, zl = this.z;
-    const ix = range(xl, x0 * 1e-3 - 1e-12, x1 * 1e-3 + 1e-12), jy = range(yl, y0 * 1e-3 - 1e-12, y1 * 1e-3 + 1e-12);
+    let ix = range(xl, x0 * 1e-3 - 1e-12, x1 * 1e-3 + 1e-12), jy = range(yl, y0 * 1e-3 - 1e-12, y1 * 1e-3 + 1e-12);
     const kz = []; for (let k = 0; k < zl.length; k++) if (zl[k] >= z0 * 1e-3 - 1e-12 && zl[k] < z1 * 1e-3 - 1e-12) kz.push(k);
-    if (!ix.length || !jy.length || !kz.length) throw new Error("port box contains no Ez edge");
+    // on a coarse mesh the 0.16 mm face may hold no line: use the nearest one (a single Ez column)
+    const nearest = (arr, v) => { let b = 0; for (let i = 1; i < arr.length; i++) if (Math.abs(arr[i] - v) < Math.abs(arr[b] - v)) b = i; return [b]; };
+    if (!ix.length) ix = nearest(xl, (x0 + x1) / 2 * 1e-3);
+    if (!jy.length) jy = nearest(yl, (y0 + y1) / 2 * 1e-3);
+    if (!kz.length) throw new Error("port box contains no Ez edge between the two copper layers");
     if (ix[0] <= 0 || jy[0] <= 0 || ix[ix.length - 1] >= this.nx - 1 || jy[jy.length - 1] >= this.ny - 1) throw new Error("port touches the boundary");
     const L = zl[kz[kz.length - 1] + 1] - zl[kz[0]];
     let area = 0; for (const i of ix) for (const j of jy) area += this.ddx[i] * this.ddy[j];
@@ -100,6 +119,23 @@ const min = a => { let m = Infinity; for (const v of a) if (v < m) m = v; return
 const mean = a => { let s = 0; for (const v of a) s += v; return s / a.length; };
 const concat = (a, b) => { const o = new Float32Array(a.length + b.length); o.set(a); o.set(b, a.length); return o; };
 const range = (arr, lo, hi) => { const o = []; for (let i = 0; i < arr.length; i++) if (arr[i] >= lo && arr[i] <= hi) o.push(i); return o; };
+
+// incident / reflected wave magnitudes per port at the given spectra, and the power the ports
+// deliver into the structure (amplitude convention: P = |V|^2 / 2R)
+export function portPower(spec) {
+  const n = spec[0].V.length / 2, Pacc = new Float64Array(n), Vinc = new Float64Array(n);
+  for (let q = 0; q < n; q++) {
+    let p = 0;
+    spec.forEach((s, i) => {
+      const V = [s.V[2 * q], s.V[2 * q + 1]], I = [s.I[2 * q], s.I[2 * q + 1]], R = s.R;
+      const inc2 = ((V[0] + R * I[0]) ** 2 + (V[1] + R * I[1]) ** 2) / 4, ref2 = ((V[0] - R * I[0]) ** 2 + (V[1] - R * I[1]) ** 2) / 4;
+      if (i === 0) { Vinc[q] = Math.sqrt(inc2); p += inc2 / (2 * R); }
+      p -= ref2 / (2 * R);
+    });
+    Pacc[q] = p;
+  }
+  return { Pacc, Vinc };
+}
 
 // complex helpers for S-parameters
 export function sParams(spec, pair) {
@@ -193,8 +229,42 @@ export class CpuEngine {
       VI[pq * nsteps + nStep] = V; VI[NP * nsteps + pq * nsteps + nStep] = I;
     });
   }
-  async runSteps(n0, count, excArr, VI, nsteps) { for (let n = n0; n < n0 + count; n++) this.step(n, excArr[n], VI, nsteps); }
+  async runSteps(n0, count, excArr, VI, nsteps) {
+    for (let n = n0; n < n0 + count; n++) {
+      this.step(n, excArr[n], VI, nsteps);
+      if (this.nf) accumulateCpu(this.nf.surf, [this.Ex, this.Ey, this.Ez, this.Hx, this.Hy, this.Hz], this.nf.acc, this.nf.nf, this.nf.f0, this.nf.df, n * this.M.dt);
+    }
+  }
+  prepareNf2ff(surf, nf, f0, df) { this.nf = { surf, nf, f0, df, acc: new Float64Array(surf.npts * nf * 8) }; }
+  async readNf2ff() { const a = Float32Array.from(this.nf.acc); for (let i = 0; i < a.length; i++) a[i] *= this.M.dt; return a; }
   async energy() { let e = 0; for (const a of [this.Ex, this.Ey, this.Ez]) for (let i = 0; i < a.length; i++) e += a[i] * a[i]; return e; }
+  // instantaneous Poynting flux (W) out through a nf2ff surface, from the same samples the transform uses
+  boxFlux(surf) {
+    const F = [this.Ex, this.Ey, this.Ez, this.Hx, this.Hy, this.Hz], { pts, nrm, area, npts } = surf;
+    let flux = 0;
+    for (let p = 0; p < npts; p++) {
+      const b = p * 12, n = [nrm[3 * p], nrm[3 * p + 1], nrm[3 * p + 2]];
+      const e1 = F[pts[b + 1]][pts[b]], e2 = F[pts[b + 3]][pts[b + 2]];
+      const h1 = 0.5 * (F[pts[b + 5]][pts[b + 4]] + F[pts[b + 7]][pts[b + 6]]), h2 = 0.5 * (F[pts[b + 9]][pts[b + 8]] + F[pts[b + 11]][pts[b + 10]]);
+      const ax = n[0] !== 0 ? [1, 2] : (n[1] !== 0 ? [0, 2] : [0, 1]);
+      const E = [0, 0, 0], H = [0, 0, 0]; E[ax[0]] = e1; E[ax[1]] = e2; H[ax[0]] = h1; H[ax[1]] = h2;
+      const S = [E[1] * H[2] - E[2] * H[1], E[2] * H[0] - E[0] * H[2], E[0] * H[1] - E[1] * H[0]];
+      flux += (S[0] * n[0] + S[1] * n[1] + S[2] * n[2]) * area[p];
+    }
+    return flux;
+  }
+  // physical field energy (J): sum 1/2 eps E^2 dV + 1/2 mu H^2 dV on the Yee cells (eps from the E coefficients)
+  physEnergy() {
+    const M = this.M, { nx, ny, nz } = M, dx = M.dx, dy = M.dy, dz = M.dz, ddx = M.ddx, ddy = M.ddy, ddz = M.ddz;
+    let We = 0, Wm = 0;
+    for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nz; k++) { const q = (i * ny + j) * nz + k; const c = M.cEx[q]; if (c > 0) We += 0.5 * (M.dt / c) * this.Ex[q] ** 2 * dx[i] * ddy[j] * ddz[k]; }
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny - 1; j++) for (let k = 0; k < nz; k++) { const q = (i * (ny - 1) + j) * nz + k; const c = M.cEy[q]; if (c > 0) We += 0.5 * (M.dt / c) * this.Ey[q] ** 2 * ddx[i] * dy[j] * ddz[k]; }
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nz - 1; k++) { const q = (i * ny + j) * (nz - 1) + k; const c = M.cEz[q]; if (c > 0) We += 0.5 * (M.dt / c) * this.Ez[q] ** 2 * ddx[i] * ddy[j] * dz[k]; }
+    for (let i = 0; i < nx; i++) for (let j = 0; j < ny - 1; j++) for (let k = 0; k < nz - 1; k++) Wm += 0.5 * MU0 * this.Hx[(i * (ny - 1) + j) * (nz - 1) + k] ** 2 * ddx[i] * dy[j] * dz[k];
+    for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny; j++) for (let k = 0; k < nz - 1; k++) Wm += 0.5 * MU0 * this.Hy[(i * ny + j) * (nz - 1) + k] ** 2 * dx[i] * ddy[j] * dz[k];
+    for (let i = 0; i < nx - 1; i++) for (let j = 0; j < ny - 1; j++) for (let k = 0; k < nz; k++) Wm += 0.5 * MU0 * this.Hz[(i * (ny - 1) + j) * nz + k] ** 2 * dx[i] * dy[j] * ddz[k];
+    return { We, Wm, W: We + Wm };
+  }
   async readVI(VI) { return VI; }
   async readSlice(kz) { const { nx, ny, nz } = this.M; const s = new Float32Array(nx * ny); for (let i = 0; i < nx; i++) for (let j = 0; j < ny; j++) s[i * ny + j] = this.Ez[(i * ny + j) * (nz - 1) + kz]; return s; }
   destroy() {}
@@ -218,7 +288,7 @@ function wgsl(M) {
   const psiLen = Math.max(1, o);
   const head = `
 const NX: i32 = ${nx}; const NY: i32 = ${ny}; const NZ: i32 = ${nz}; const NP: i32 = ${n}; const N2: i32 = ${n2};
-struct U { cH: f32, step: u32, npt: u32, nsteps: u32, ex: f32, pad0: f32, pad1: f32, pad2: f32 };
+struct U { cH: f32, step: u32, npt: u32, nsteps: u32, ex: f32, pad0: f32, dt: f32, pad2: f32, nf: u32, npts: u32, f0: f32, df: f32 };
 @group(0) @binding(0) var<uniform> u: U;
 @group(0) @binding(1) var<storage, read> prm: array<f32>;
 @group(0) @binding(2) var<storage, read_write> psi: array<f32>;
@@ -356,10 +426,33 @@ var<workgroup> sh: array<f32, ${WG}>;
   let i = gid(w, l); if (i >= NX * NY) { return; }
   S[i] = Ez[i * (NZ - 1) + i32(u.pad0)];
 }`;
+  // near-to-far-field accumulation: one thread per (surface point, frequency)
+  K.nf = `
+struct U { cH: f32, step: u32, npt: u32, nsteps: u32, ex: f32, pad0: f32, dt: f32, pad2: f32, nf: u32, npts: u32, f0: f32, df: f32 };
+@group(0) @binding(0) var<uniform> u: U;
+@group(0) @binding(1) var<storage, read> Ex: array<f32>;
+@group(0) @binding(2) var<storage, read> Ey: array<f32>;
+@group(0) @binding(3) var<storage, read> Ez: array<f32>;
+@group(0) @binding(4) var<storage, read> Hx: array<f32>;
+@group(0) @binding(5) var<storage, read> Hy: array<f32>;
+@group(0) @binding(6) var<storage, read> Hz: array<f32>;
+@group(0) @binding(7) var<storage, read> pts: array<i32>;
+@group(0) @binding(8) var<storage, read_write> acc: array<f32>;
+fn fld(a: i32, i: i32) -> f32 { switch a { case 0: { return Ex[i]; } case 1: { return Ey[i]; } case 2: { return Ez[i]; } case 3: { return Hx[i]; } case 4: { return Hy[i]; } default: { return Hz[i]; } } }
+@compute @workgroup_size(${WG}) fn main(@builtin(workgroup_id) w: vec3<u32>, @builtin(local_invocation_index) l: u32) {
+  let id = i32((w.x + w.y * 65535u) * ${WG}u + l); let nf = i32(u.nf); if (id >= i32(u.npts) * nf) { return; }
+  let p = id / nf; let q = id % nf; let b = p * 12;
+  let e1 = fld(pts[b + 1], pts[b]); let e2 = fld(pts[b + 3], pts[b + 2]);
+  let h1 = 0.5 * (fld(pts[b + 5], pts[b + 4]) + fld(pts[b + 7], pts[b + 6])); let h2 = 0.5 * (fld(pts[b + 9], pts[b + 8]) + fld(pts[b + 11], pts[b + 10]));
+  let wt = 6.283185307179586 * (u.f0 + f32(q) * u.df) * f32(u.step) * u.dt; let c = cos(wt); let s = -sin(wt);
+  let o = id * 8;
+  acc[o] += e1 * c; acc[o + 1] += e1 * s; acc[o + 2] += e2 * c; acc[o + 3] += e2 * s;
+  acc[o + 4] += h1 * c; acc[o + 5] += h1 * s; acc[o + 6] += h2 * c; acc[o + 7] += h2 * s;
+}`;
   // explicit bind group layouts (an "auto" layout drops bindings a kernel does not read)
   const U = "uniform", R = "read-only-storage", S = "storage";
   const LAY = { Hx: [U, R, S, R, R, S], Hy: [U, R, S, R, R, S], Hz: [U, R, S, R, R, S], Ex: [U, R, S, R, R, S, R], Ey: [U, R, S, R, R, S, R], Ez: [U, R, S, R, R, S, R, R],
-    VI: [U, R, S, R, R, R, R, S], reduce: [U, R, S, R, S], slice: [U, R, S, R, S] };
+    VI: [U, R, S, R, R, R, R, S], reduce: [U, R, S, R, S], slice: [U, R, S, R, S], nf: [U, R, R, R, R, R, R, R, S] };
   return { K, LAY, off, po, paramsLen, psiLen };
 }
 
@@ -383,7 +476,7 @@ export class GpuEngine {
       Hx: mk(4 * nx * (ny - 1) * (nz - 1)), Hy: mk(4 * (nx - 1) * ny * (nz - 1)), Hz: mk(4 * (nx - 1) * (ny - 1) * nz),
       cEx: mk(M.cEx.byteLength), cEy: mk(M.cEy.byteLength), cEz: mk(M.cEz.byteLength),
       prm: mk(4 * g.paramsLen), psi: mk(4 * g.psiLen), pt: mk(4 * (this.tables.NP * 9)), pg: mk(4 * this.tables.NP * 9),
-      u: dev.createBuffer({ size: 32, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
+      u: dev.createBuffer({ size: 48, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST }),
     };
     up(this.B.cEx, M.cEx); up(this.B.cEy, M.cEy); up(this.B.cEz, M.cEz);
     const prm = new Float32Array(g.paramsLen);
@@ -413,9 +506,20 @@ export class GpuEngine {
       Ex: bg("Ex", [B.u, B.prm, B.psi, B.Hy, B.Hz, B.Ex, B.cEx]), Ey: bg("Ey", [B.u, B.prm, B.psi, B.Hx, B.Hz, B.Ey, B.cEy]),
     };
     this.sizes = { Hx: nx * (ny - 1) * (nz - 1), Hy: (nx - 1) * ny * (nz - 1), Hz: (nx - 1) * (ny - 1) * nz, Ex: (nx - 1) * ny * nz, Ey: nx * (ny - 1) * nz, Ez: nx * ny * (nz - 1) };
-    this.uni = new ArrayBuffer(32); this.uf = new Float32Array(this.uni); this.uu = new Uint32Array(this.uni);
-    this.uf[0] = M.cH;
+    this.uni = new ArrayBuffer(48); this.uf = new Float32Array(this.uni); this.uu = new Uint32Array(this.uni);
+    this.uf[0] = M.cH; this.uf[6] = M.dt;
   }
+  prepareNf2ff(surf, nf, f0, df) {
+    const dev = this.dev, B = this.B;
+    B.pts = dev.createBuffer({ size: Math.max(16, surf.pts.byteLength), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    dev.queue.writeBuffer(B.pts, 0, surf.pts.buffer, surf.pts.byteOffset, surf.pts.byteLength);
+    B.acc = dev.createBuffer({ size: Math.max(16, 4 * 8 * surf.npts * nf), usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC });
+    B.accRead = dev.createBuffer({ size: B.acc.size, usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST });
+    this.bgs.nf = dev.createBindGroup({ layout: this.pipes.nf.getBindGroupLayout(0), entries: [B.u, B.Ex, B.Ey, B.Ez, B.Hx, B.Hy, B.Hz, B.pts, B.acc].map((b, i) => ({ binding: i, resource: { buffer: b } })) });
+    this.nfCount = surf.npts * nf;
+    this.uu[8] = nf; this.uu[9] = surf.npts; this.uf[10] = f0; this.uf[11] = df;
+  }
+  async readNf2ff() { const a = await this._readback(this.B.acc, this.B.accRead, 4 * 8 * this.nfCount); for (let i = 0; i < a.length; i++) a[i] *= this.M.dt; return a; }
   dispatch(pass, name, count) {
     const groups = Math.ceil(count / WG); pass.setPipeline(this.pipes[name]);
     pass.dispatchWorkgroups(Math.min(groups, 65535), Math.ceil(groups / 65535));
@@ -448,6 +552,7 @@ export class GpuEngine {
       for (const k of ["Hx", "Hy", "Hz"]) { pass.setBindGroup(0, this.bgs[k]); this.dispatch(pass, k, S[k]); }
       for (const k of ["Ex", "Ey", "Ez"]) { pass.setBindGroup(0, this.bgs[k]); this.dispatch(pass, k, S[k]); }
       pass.setPipeline(this.pipes.VI); pass.setBindGroup(0, this.bgs.VI); pass.dispatchWorkgroups(Math.max(1, this.M.ports.length));
+      if (this.bgs.nf) { pass.setBindGroup(0, this.bgs.nf); this.dispatch(pass, "nf", this.nfCount); }
       pass.end();
       dev.queue.submit([enc.finish()]);
     }
@@ -481,11 +586,12 @@ export class GpuEngine {
 }
 
 // ---------------------------------------------------------------- run loop (either engine)
-export async function run(M, engine, exc, nsteps, { end = 1e-3, minSteps = 1000, onProgress = null, snapEvery = 0, snapK = 0, onSnap = null, batch = 100, shouldStop = null } = {}) {
+export async function run(M, engine, exc, nsteps, { end = 1e-3, minSteps = 1000, onProgress = null, snapEvery = 0, snapK = 0, onSnap = null, batch = 100, shouldStop = null, nf2ff = null } = {}) {
   const excArr = new Float32Array(nsteps); for (let n = 0; n < nsteps; n++) excArr[n] = exc(n * M.dt);
   const NP = Math.max(1, M.ports.length);
   let VI = null;
   if (engine instanceof CpuEngine) VI = new Float32Array(2 * NP * nsteps); else engine.prepareRun(nsteps);
+  if (nf2ff) engine.prepareNf2ff(nf2ff.surf, nf2ff.nf, nf2ff.f0, nf2ff.df);
   const t0 = performance.now();
   let emax = 0, n = 0, energyDb = 0;
   for (n = 0; n < nsteps; n += batch) {
@@ -496,6 +602,7 @@ export async function run(M, engine, exc, nsteps, { end = 1e-3, minSteps = 1000,
     emax = Math.max(emax, e); energyDb = emax > 0 ? 10 * Math.log10(e / emax + 1e-30) : 0;
     if (snapEvery && onSnap && Math.floor(done / snapEvery) !== Math.floor(n / snapEvery)) onSnap(done, await engine.readSlice(snapK));
     if (onProgress) onProgress({ step: done, nsteps, energyDb, elapsed: (performance.now() - t0) / 1000 });
+    if (engine instanceof CpuEngine) await new Promise(res => setTimeout(res, 0));     // let a worker receive its stop message
     if (shouldStop && shouldStop()) { n = done; break; }
     if (done > minSteps && emax > 0 && e < end * emax) { n = done; break; }
     if (done >= nsteps) { n = done; break; }
@@ -503,5 +610,6 @@ export async function run(M, engine, exc, nsteps, { end = 1e-3, minSteps = 1000,
   const stepsDone = Math.min(n, nsteps);
   const vi = await engine.readVI(VI);
   M.ports.forEach((p, q) => { p.V = Float64Array.from(vi.subarray(q * nsteps, q * nsteps + stepsDone)); p.I = Float64Array.from(vi.subarray(NP * nsteps + q * nsteps, NP * nsteps + q * nsteps + stepsDone)); });
-  return { steps: stepsDone, wall: (performance.now() - t0) / 1000, energyDb };
+  const acc = nf2ff ? await engine.readNf2ff() : null;
+  return { steps: stepsDone, wall: (performance.now() - t0) / 1000, energyDb, acc };
 }

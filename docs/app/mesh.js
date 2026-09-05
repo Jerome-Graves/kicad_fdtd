@@ -37,7 +37,16 @@ export function airLines(edge, direction, first, n, grow) {
 // sorted, with values closer than 1 nm merged (floating-point twins like 18.9 and 18.900000000000002)
 const uniqSorted = arr => { const s = Array.from(arr); s.sort((a, b) => a - b); const o = []; for (const v of s) { if (!o.length || v - o[o.length - 1] > 1e-9) o.push(v); } return o; };
 
-export function buildMesh(bd, nets, window, { res = 0.1, base = 0.2, near = 0.6, tie = {}, airCells = 14, grow = 1.25, zCell = 0.1, portBoxes = [] } = {}) {
+// air outside the window/board: optional uniform gap (airGap mm of airGapCell cells, for radiation
+// problems: keeps the PML away from the copper) then airCells graded cells, the outer npml of which are PML
+export function airStack(edge, direction, first, { airCells, grow, airGap, airGapCell }) {
+  const out = [];
+  let e = edge;
+  if (airGap > 0) { const n = Math.max(1, Math.round(airGap / airGapCell)); for (let k = 1; k <= n; k++) out.push(edge + direction * airGap * k / n); e = edge + direction * airGap; first = Math.max(first, airGap / n); }
+  return out.concat(airLines(e, direction, first, airCells, grow));
+}
+export function buildMesh(bd, nets, window, { res = 0.1, base = 0.2, near = 0.6, tie = {}, airCells = 14, grow = 1.25, zCell = 0.1, portBoxes = [], airGap = 0, airGapCell = 0.5 } = {}) {
+  const air = { airCells, grow, airGap, airGapCell };
   const [xmin, ymin, xmax, ymax] = window;
   const xl = new Set([xmin, xmax]), yl = new Set([ymin, ymax]);
   const addPt = (x, y) => {
@@ -87,7 +96,7 @@ export function buildMesh(bd, nets, window, { res = 0.1, base = 0.2, near = 0.6,
     const grid = [];
     for (let gv = lo; gv <= hi + base / 2 + 1e-12; gv += base) { let dmin = Infinity; for (const f of fixed) dmin = Math.min(dmin, Math.abs(gv - f)); if (dmin > res * 0.5) grid.push(gv); }
     let L2 = smooth(uniqSorted([...fixed, ...grid]), base);
-    L2 = uniqSorted([...L2, ...airLines(lo, -1, res, airCells, grow), ...airLines(hi, +1, res, airCells, grow)]);
+    L2 = uniqSorted([...L2, ...airStack(lo, -1, res, air), ...airStack(hi, +1, res, air)]);
     lines[name] = Float64Array.from(L2);
   }
   let zl = [...Object.values(bd.z), bd.zBot];
@@ -95,8 +104,10 @@ export function buildMesh(bd, nets, window, { res = 0.1, base = 0.2, near = 0.6,
   zl = uniqSorted(zl.map(v => Math.round(v * 1e6) / 1e6));
   zl = smooth(zl, 0.4);
   for (const zc of [...Object.values(bd.z), bd.zBot]) { let bi = 0; for (let i = 1; i < zl.length; i++) if (Math.abs(zl[i] - zc) < Math.abs(zl[bi] - zc)) bi = i; zl[bi] = zc; }
-  zl = uniqSorted([...zl, ...airLines(0.0, +1, zCell, airCells, grow), ...airLines(bd.zBot, -1, zCell, airCells, grow)]);
+  zl = uniqSorted([...zl, ...airStack(0.0, +1, zCell, air), ...airStack(bd.zBot, -1, zCell, air)]);
   lines.z = Float64Array.from(zl);
+  // lines from each domain edge to the middle of the uniform air gap (where a far-field box belongs)
+  lines.gapInset = airCells + (airGap > 0 ? Math.floor(Math.max(1, Math.round(airGap / airGapCell)) / 2) : 0);
   return lines;
 }
 

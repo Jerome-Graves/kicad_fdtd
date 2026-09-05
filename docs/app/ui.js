@@ -1,6 +1,8 @@
 // Main thread: file handling, drawing, run control, plots. Heavy CPU work goes to worker.js;
 // the FDTD engine (WebGPU or the JS reference) runs here.
 import { Model, CpuEngine, GpuEngine, run, gaussPulse, sParams } from "./fdtd.js";
+import { nf2ffSurface, cispr32B } from "./nf2ff.js";
+import { pointInPoly, polyBBox } from "./geom.js";
 
 const $ = id => document.getElementById(id);
 const LAYER_COL = { "F.Cu": "#e0603a", "In1.Cu": "#4caf50", "In2.Cu": "#3f8cff", "In3.Cu": "#c77dff", "In4.Cu": "#ff9f43", "B.Cu": "#3fb8c8" };
@@ -217,7 +219,7 @@ $("setupBtn").onclick = async () => {
   const ports = $("ports").value.trim().split(/\s+/).filter(Boolean); if (!ports.length) return status("give the port pads");
   $("setupBtn").disabled = true; status("meshing and checking…"); $("setupRep").textContent = "";
   try {
-    const r = await call({ type: "setup", nets, ports, res: +$("res").value, base: +$("base").value, margin: +$("margin").value, fmax: +$("fmax").value * 1e9, z0: +$("z0").value, tie: $("tie").value.split(/\s+/).filter(Boolean) });
+    const r = await call({ type: "setup", nets, ports, res: +$("res").value, base: +$("base").value, margin: +$("margin").value, fmax: +$("fmax").value * 1e9, z0: +$("z0").value, tie: $("tie").value.split(/\s+/).filter(Boolean), airGap: $("emcOn").checked ? +$("emcGap").value : 0, wholeBoard: $("emcOn").checked });
     setup = r.setup; vox = r.vox; result = null; snaps = []; curSnap = -1; $("snapSl").max = 0;
     const steps = Math.round(+$("tmax").value * 1e-9 / setup.dt);
     $("setupRep").innerHTML = esc(setup.log.slice(0, -1).join("\n")) + `\n${steps} steps for ${$("tmax").value} ns\n` + (setup.nShorts ? `<span class="bad">MERGE CHECK: ${setup.nShorts} node(s) join the pair to another conductor (red rings)</span>` : `<span class="ok">MERGE CHECK: clean</span>`);
@@ -242,25 +244,43 @@ $("runBtn").onclick = async () => {
     const onSnap = (n, data, dt) => { snaps.push({ n, t: n * dt, data, z: snapZ }); $("snapSl").max = snaps.length - 1; if (!playing) { $("snapSl").value = snaps.length - 1; showSnap(snaps.length - 1); } };
     const onProgress = p => { $("prog").style.width = (100 * p.step / p.nsteps) + "%"; $("runRep").textContent = `step ${p.step} / ${p.nsteps}  energy ${p.energyDb.toFixed(1)} dB  ${p.elapsed.toFixed(0)} s  ${(p.step * setup.cells / p.elapsed / 1e6).toFixed(0)} Mcell/s`; };
     let r, S, f = []; for (let q = 0; q < 300; q++) f.push(100e6 + (setup.fmax - 100e6) * q / 299);
+    const emc = $("emcOn").checked ? { clk: +$("emcClk").value * 1e6, A: +$("emcA").value, tr: +$("emcTr").value * 1e-9, duty: +$("emcDuty").value, nf: Math.max(3, +$("emcNf").value), spacing: 0.5e-3, distance: 3.0 } : null;
+    // a radiating structure keeps energy long after the pulse: the far field needs the full ring-down
+    const endCrit = emc ? Math.min(+$("endc").value, 1e-6) : +$("endc").value;
+    let tmaxRun = tmax;
+    if (emc && tmax < 40e-9) { tmaxRun = 40e-9; log("emissions: t max raised to 40 ns so the ring-down is captured (the power balance is reported)"); }
+    let emcResult = null;
+    $("emcRep").textContent = ""; $("emcBox").hidden = true;
     if (gpuOk) {
       const erOfZ = zz => { for (const [zt, zb, er] of setup.diel) if (zb <= zz && zz <= zt) return er; return 1.0; };
-      const M = new Model(setup.lines, vox, erOfZ);
+      const ol = { outline: setup.outline, holes: [], bbox: polyBBox(setup.outline) };
+      const M = new Model(setup.lines, vox, erOfZ, { insideXY: (x, y) => pointInPoly(ol, x, y) });
       const excOf = pair ? [1, 0, -1, 0] : [1, 0, 0, 0];
       setup.boxes.forEach(([s, e], i) => M.addPort(s[0], e[0], s[1], e[1], s[2], e[2], setup.z0, i < excOf.length ? excOf[i] : 0));
       engine = new GpuEngine(M); await engine.init();
       const exc = gaussPulse(setup.fmax / 2, setup.fmax / 2);
-      const nsteps = Math.floor(tmax / M.dt);
+      const nsteps = Math.floor(tmaxRun / M.dt);
+      let nf2ff = null;
+      if (emc) { if (!setup.airGap) log("note: set up with the emissions box ticked to add the air gap the far field needs"); const surf = nf2ffSurface(M, { spacing: emc.spacing, inset: setup.gapInset }); nf2ff = { surf, nf: emc.nf, f0: 0.2e9, df: (setup.fmax - 0.2e9) / (emc.nf - 1) }; log(`far-field box: ${surf.npts} points, ${emc.nf} frequencies`); }
       log(`[${pair ? "odd" : "single"}] WebGPU engine, ${nsteps} steps for ${$("tmax").value} ns`);
-      r = await run(M, engine, exc.f, nsteps, { end: +$("endc").value, snapEvery: +$("snapEvery").value, snapK: kz, batch: 100, onSnap: (n, d) => onSnap(n, d, M.dt), onProgress, shouldStop: () => stopFlag });
+      r = await run(M, engine, exc.f, nsteps, { end: endCrit, snapEvery: +$("snapEvery").value, snapK: kz, batch: 100, nf2ff, onSnap: (n, d) => onSnap(n, d, M.dt), onProgress, shouldStop: () => stopFlag });
       S = sParams(M.spectra(f), pair);
+      if (nf2ff) {
+        status("far-field transform…");
+        const freqs = []; for (let i = 0; i < nf2ff.nf; i++) freqs.push(nf2ff.f0 + i * nf2ff.df);
+        const spec = M.spectra(freqs).map(s => ({ V: Array.from(s.V), I: Array.from(s.I), R: s.R }));
+        const surf = { pts: null, pos: nf2ff.surf.pos, nrm: nf2ff.surf.nrm, area: nf2ff.surf.area, npts: nf2ff.surf.npts };
+        emcResult = (await call({ type: "farfield", surf, acc: r.acc, nf: nf2ff.nf, f0: nf2ff.f0, df: nf2ff.df, spec, emc, fmax: setup.fmax, dt: M.dt })).emc;
+      }
     } else {
       log(`[${pair ? "odd" : "single"}] CPU engine in the worker (slow)`);
       let dt = setup.dt;
       hooks.snap = (n, d) => onSnap(n, d, dt); hooks.progress = onProgress;
-      const rr = await call({ type: "runCpu", nets: setup.nets, boxes: setup.boxes, z0: setup.z0, fmax: setup.fmax, tmax, end: +$("endc").value, snapEvery: +$("snapEvery").value, snapK: kz });
+      const rr = await call({ type: "runCpu", nets: setup.nets, boxes: setup.boxes, z0: setup.z0, fmax: setup.fmax, tmax: tmaxRun, end: endCrit, snapEvery: +$("snapEvery").value, snapK: kz, emc });
       hooks.snap = hooks.progress = null;
-      r = rr.result; S = rr.result; f = rr.result.f;
+      r = rr.result; S = rr.result; f = rr.result.f; emcResult = rr.result.emc || null;
     }
+    if (emcResult) { $("emcRep").textContent = emcResult.report; $("emcBox").hidden = false; plotEmc(emcResult); log(emcResult.worst ? (emcResult.worst.margin >= 0 ? `emissions: passes CISPR 32 B by ${emcResult.worst.margin.toFixed(1)} dB` : `emissions: FAILS CISPR 32 B by ${(-emcResult.worst.margin).toFixed(1)} dB at ${(emcResult.worst.f / 1e6).toFixed(0)} MHz`) : "emissions: no harmonics in band"); }
     const speed = r.steps * setup.cells / r.wall / 1e6;
     log(`${r.steps} steps in ${r.wall.toFixed(0)} s (${speed.toFixed(0)} Mcell-updates/s)`);
     result = { f, S11_dB: S.S11_dB, S21_dB: S.S21_dB, Z: S.Z_re || S.Z, pair, steps: r.steps, wall: r.wall, speed };
@@ -318,6 +338,28 @@ function plots() {
   const at = (arr, fq) => arr[f.reduce((b, v, i) => Math.abs(v - fq) < Math.abs(f[b] - fq) ? i : b, 0)];
   $("resRep").textContent = `${result.pair ? "Zdiff" : "Zin"} median 0.2-2 GHz: ${med(Z).toFixed(0)} ohm\n` +
     [480e6, 1e9, 2e9].filter(fq => fq <= f[f.length - 1]).map(fq => `${(fq / 1e6).toFixed(0)} MHz: S21 ${at(result.S21_dB, fq).toFixed(2)} dB  S11 ${at(result.S11_dB, fq).toFixed(1)} dB  Z ${at(Z, fq).toFixed(0)} ohm`).join("\n");
+}
+
+function plotEmc(e) {
+  const canvas = $("plotE"), c = canvas.getContext("2d"); const r = canvas.getBoundingClientRect(); canvas.width = r.width * devicePixelRatio; canvas.height = r.height * devicePixelRatio;
+  c.setTransform(devicePixelRatio, 0, 0, devicePixelRatio, 0, 0); c.clearRect(0, 0, r.width, r.height);
+  const m = { l: 42, r: 10, t: 10, b: 24 }, w = r.width - m.l - m.r, h = r.height - m.t - m.b;
+  const fmax = e.freqs[e.freqs.length - 1], x0 = 1e8, yl = [0, 90];
+  const X = f => m.l + Math.log10(f / x0) / Math.log10(fmax / x0) * w, Y = y => m.t + (yl[1] - y) / (yl[1] - yl[0]) * h;
+  c.strokeStyle = "#2c323b"; c.fillStyle = "#8a93a0"; c.font = "10px system-ui"; c.lineWidth = 1;
+  for (let g = 0; g <= 3; g++) { const y = yl[0] + (yl[1] - yl[0]) * g / 3; c.beginPath(); c.moveTo(m.l, Y(y)); c.lineTo(m.l + w, Y(y)); c.stroke(); c.fillText(y.toFixed(0), 4, Y(y) + 3); }
+  for (const f of [1e8, 2e8, 5e8, 1e9, 2e9, 3e9]) if (f <= fmax) { c.beginPath(); c.moveTo(X(f), m.t); c.lineTo(X(f), m.t + h); c.stroke(); c.fillText(f >= 1e9 ? (f / 1e9) + " G" : (f / 1e6) + " M", X(f) - 10, r.height - 8); }
+  c.fillText("dBuV/m at 3 m", m.l + 4, m.t + 10);
+  // limit line
+  c.strokeStyle = "#e5533d"; c.lineWidth = 1.5; c.beginPath();
+  let first = true; for (let f = x0; f <= fmax; f *= 1.02) { const y = Y(cispr32B(f)); first ? c.moveTo(X(f), y) : c.lineTo(X(f), y); first = false; } c.stroke();
+  c.fillStyle = "#e5533d"; c.fillText("CISPR 32 B (peak)", m.l + w - 100, Y(cispr32B(fmax)) - 4);
+  // 1 V broadband transfer
+  c.strokeStyle = "#8a93a0"; c.setLineDash([3, 3]); c.beginPath();
+  e.freqs.forEach((f, i) => { const y = Y(Math.max(yl[0], 20 * Math.log10(e.T[i] * 1e6 + 1e-30))); i ? c.lineTo(X(f), y) : c.moveTo(X(f), y); }); c.stroke(); c.setLineDash([]);
+  c.fillStyle = "#8a93a0"; c.fillText("1 V sine per frequency", m.l + 4, m.t + 22);
+  // harmonics
+  for (const hm of e.harm) { const y = Y(Math.max(yl[0], Math.min(yl[1], hm.dBuV))); c.fillStyle = hm.margin >= 0 ? "#5fbf7a" : "#e5533d"; c.beginPath(); c.arc(X(hm.f), y, 4, 0, 7); c.fill(); }
 }
 
 // ---------------------------------------------------------------- boot
