@@ -189,3 +189,6 @@ change to the solver.
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). MIT licensed.
+
+Written while designing the boards for [BugBot](https://www.bugbotlab.com/), a small robot for teaching robotics
+and computer science.
