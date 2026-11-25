@@ -30,6 +30,15 @@ def backend(use_gpu=True):
     return sys.modules[__name__]
 
 
+def at_port(v, sites):
+    """True for a via whose barrel reaches a port's face (sites: the ports' centres): left out of the model, where
+    it would short the port's signal plate to its plane plate. Its copper out to its radius, the port's face out to
+    its side. It was every via within 0.6 mm of a port: a pair that changes layer 0.55 mm from its connector pin
+    lost that via, the line was open in the model, and its impedance read 4 ohm (MP-BOY, kiLoop _kl21)."""
+    from . import geometry
+    return any(np.hypot(v["x"] - px, v["y"] - py) < v["r"] + geometry.PORT_W for px, py in sites)
+
+
 def port_site(bd, ref, num, **kw):
     """geometry.Board.port_site (here so both backends answer to the same names)."""
     return bd.port_site(ref, num, **kw)
@@ -82,7 +91,7 @@ def assign(bd, lines, tie_nets=None, skip_via_near=(), window=None):
     for v in bd.vias():
         if win is not None and not win.contains(shapely.geometry.Point(v["x"], v["y"])):
             continue
-        if any(np.hypot(v["x"] - px, v["y"] - py) < 0.6 for px, py in skip_via_near):
+        if at_port(v, skip_via_near):
             continue
         k = nid(v["net"])
         r = v["r"]

@@ -21,6 +21,8 @@ Via barrels are stamped one thread a via. tests/check_voxel_gpu.py holds the res
 import numpy as np
 import cupy as cp
 
+from . import voxel
+
 EPS = 1e-7                 # mm: a mesh point this close to a polygon edge is tested exactly, not by the fill
 THREADS = 128
 
@@ -291,7 +293,7 @@ def assign(bd, lines, tie_nets=None, skip_via_near=(), window=None):
     for v in bd.vias():
         if win is not None and not win.contains(Point(v["x"], v["y"])):
             continue
-        if any(np.hypot(v["x"] - px, v["y"] - py) < 0.6 for px, py in skip_via_near):
+        if voxel.at_port(v, skip_via_near):
             continue
         vias.append((v["x"], v["y"], v["r"], min(v["zb"], v["zt"]), max(v["zb"], v["zt"]), nid(v["net"])))
     if vias:
