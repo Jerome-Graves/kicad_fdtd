@@ -12,6 +12,11 @@ from shapely.geometry import Polygon, Point, box
 from shapely.ops import unary_union
 
 PORT_W = 0.16          # lumped-port face side; fits inside a 0.3 mm trace at 45 deg
+PORT_RING_DEG = 15      # the rings round a pad are tried every so many degrees: a step that divides 90, so straight
+                        # along either axis is among them (20 was not: a port on a 0.2 mm wide pad with a via's
+                        # antipad at one end had clean copper along the pad and no ring direction that stayed on it)
+PORT_FACE = ((0, 0), (-0.5, -0.5), (0.5, -0.5), (-0.5, 0.5), (0.5, 0.5))   # where a port's face is tested: its centre
+                                                                           # and corners, in face sides
 DEFAULT_ER, DEFAULT_TAND, DEFAULT_TOTAL, DEFAULT_CU = 4.5, 0.02, 1.6, 0.035
 
 # name patterns that mark the two halves of a differential pair
@@ -20,9 +25,11 @@ PAIR_SUFFIXES = [("_P", "_N"), ("+", "-"), ("P", "N"), ("_DP", "_DM"), ("DP", "D
 
 class Board:
     def __init__(self, path, ref_net=None):
-        g = json.load(open(path))
+        """path: the exporter's JSON file, or the dict it holds (export.board_geometry, from a caller holding the
+        board in memory)."""
+        g = path if isinstance(path, dict) else json.load(open(path))
         self.g = g
-        self.path = path
+        self.path = g.get("board") if isinstance(path, dict) else path
         self.layers = g["layers"]
         x0, y0, w, h = g["bbox"]
         self.x0, self.y0, self.w, self.h = x0, y0, w, h
@@ -207,36 +214,56 @@ class Board:
                 out.append((sig, self.layers[j]))
         return out
 
-    def port_site(self, ref, num, tie_nets=None, max_shift=3.5, w=PORT_W, ref_net=None):
-        """Where a lumped port for this pad can go: (x, y, signal layer, plane
-        layer, reference net, shift). The WHOLE w x w face must be on the pad's net
-        on the signal layer and on the reference net on the plane layer; walk along
-        the pad's track, then search a ring, until that holds."""
-        tie = tie_nets or {}
-        pnet = ref_net or self.ref_net
+    def port_candidates(self, ref, num, max_shift=3.5):
+        """Every spot a port for this pad is tried at, in the order tried: [(signal layer, plane layer, x, y,
+        shift)]. For each (signal, plane) pair of port_layer_options: along the pad's nearest tracks, then rings
+        round the pad. Then, for a pad with no clean spot on its own layer (a via in the pad, the plane's antipad
+        under it), the layers its net goes on to: any other layer with a track of the net within max_shift of the
+        pad, with the planes nearest that layer first."""
         p, (x0, y0) = self.pad(ref, num)
         net = p["net"]
-        for sig, plane in self.port_layer_options(ref, num):
-            def ok(x, y):
-                for dx, dy in ((0, 0), (-w / 2, -w / 2), (w / 2, -w / 2), (-w / 2, w / 2), (w / 2, w / 2)):
-                    if net not in self.copper_at(sig, x + dx, y + dy):
-                        return False
-                    if {tie.get(n, n) for n in self.copper_at(plane, x + dx, y + dy)} != {pnet}:
-                        return False
-                return True
+        out = []
+
+        def spots(sig, plane):
             tracks = [P for n, kind, P in self.polys(sig) if kind == "track" and n == net]
             cands = sorted((math.hypot(P.centroid.x - x0, P.centroid.y - y0), P.centroid.x, P.centroid.y) for P in tracks)
             dirs = [((cx - x0) / d, (cy - y0) / d) for d, cx, cy in cands[:3] if d > 1e-6]
             for shift in np.arange(0.0, max_shift + 0.05, 0.1):
                 for dx, dy in (dirs or [(0.0, 0.0)]):
-                    x, y = x0 + dx * shift, y0 + dy * shift
-                    if ok(x, y):
-                        return x, y, sig, plane, pnet, float(shift)
+                    out.append((sig, plane, x0 + dx * shift, y0 + dy * shift, float(shift)))
             for shift in np.arange(0.2, max_shift + 0.05, 0.1):
-                for ang in range(0, 360, 20):
-                    x = x0 + shift * math.cos(math.radians(ang)); y = y0 + shift * math.sin(math.radians(ang))
-                    if ok(x, y):
-                        return x, y, sig, plane, pnet, float(shift)
+                for ang in range(0, 360, PORT_RING_DEG):
+                    out.append((sig, plane, x0 + shift * math.cos(math.radians(ang)),
+                                y0 + shift * math.sin(math.radians(ang)), float(shift)))
+        for sig, plane in self.port_layer_options(ref, num):
+            spots(sig, plane)
+        here = Point(x0, y0)
+        n = len(self.layers)
+        for i, layer in enumerate(self.layers):
+            if layer in p["layers"]:
+                continue
+            if any(kind == "track" and pn == net and P.distance(here) <= max_shift for pn, kind, P in self.polys(layer)):
+                for j in sorted((j for j in range(n) if j != i), key=lambda j: (abs(j - i), j)):
+                    spots(layer, self.layers[j])
+        return out
+
+    def port_site(self, ref, num, tie_nets=None, max_shift=3.5, w=PORT_W, ref_net=None):
+        """Where a lumped port for this pad can go: (x, y, signal layer, plane
+        layer, reference net, shift). The WHOLE w x w face must be on the pad's net
+        on the signal layer and on the reference net on the plane layer: the first
+        of port_candidates where that holds. (voxel_gpu.port_site: the same, every
+        candidate tested at once on the GPU.)"""
+        tie = tie_nets or {}
+        pnet = ref_net or self.ref_net
+        net = self.pad(ref, num)[0]["net"]
+        for sig, plane, x, y, shift in self.port_candidates(ref, num, max_shift):
+            for dx, dy in PORT_FACE:
+                if net not in self.copper_at(sig, x + dx * w, y + dy * w):
+                    break
+                if {tie.get(n, n) for n in self.copper_at(plane, x + dx * w, y + dy * w)} != {pnet}:
+                    break
+            else:
+                return x, y, sig, plane, pnet, shift
         return None
 
 

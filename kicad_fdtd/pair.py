@@ -18,14 +18,16 @@ import numpy as np
 from . import geometry, mesh, voxel, solver
 
 
-def setup(bd, nets, ports, res=0.1, base=0.2, margin=2.5, tie=(), z_cell=0.1, log=print):
-    """Mesh + exact edge assignment + merge check. Returns a dict with everything the solve needs."""
+def setup(bd, nets, ports, res=0.1, base=0.2, margin=2.5, tie=(), z_cell=0.1, log=print, use_gpu=True):
+    """Mesh + exact edge assignment + merge check. Returns a dict with everything the solve needs. The assignment
+    and the check run on the GPU where there is one (voxel.backend)."""
     TIE = {n: bd.ref_net for n in tie}
     window = bd.net_bbox(nets, margin)
     sites, boxes, w = [], [], geometry.PORT_W
+    vx = voxel.backend(use_gpu)
     for rp in ports:
         ref, num = rp.split(".")
-        s = bd.port_site(ref, num, tie_nets=TIE)
+        s = vx.port_site(bd, ref, num, tie_nets=TIE)
         if not s:
             raise ValueError("no clean port site for %s (pad on %s, reference %s)" % (rp, bd.pad(ref, num)[0]["net"], bd.ref_net))
         x, y, sig, plane, pnet, shift = s
@@ -36,8 +38,8 @@ def setup(bd, nets, ports, res=0.1, base=0.2, margin=2.5, tie=(), z_cell=0.1, lo
             log("   port %-8s at (%.2f, %.2f) %s over %s (%s)%s" % (rp, x, y, sig, plane, pnet, "" if not shift else "  (shifted %.1f mm)" % shift))
     t = time.time()
     lines = mesh.build_mesh(bd, nets, window, res=res, base=base, tie_nets=TIE, port_boxes=boxes, z_cell=z_cell)
-    vox = voxel.assign(bd, lines, tie_nets=TIE, skip_via_near=[(s["x"], s["y"]) for s in sites], window=window)
-    shorts = voxel.merge_check(vox, lines, nets, TIE)
+    vox = vx.assign(bd, lines, tie_nets=TIE, skip_via_near=[(s["x"], s["y"]) for s in sites], window=window)
+    shorts = vx.merge_check(vox, lines, nets, TIE)
     cells = int(np.prod([len(lines[k]) for k in "xyz"]))
     dt, dmin = mesh.cfl_dt(lines)
     if log:
@@ -80,11 +82,46 @@ def solve(bd, st, fmax=3e9, z0=50.0, tmax=12e-9, end=1e-3, use_gpu=True, log=pri
     r = {"f": f.tolist(), "S11_dB": (20 * np.log10(abs(s11) + 1e-12)).tolist(), "S21_dB": (20 * np.log10(abs(s21) + 1e-12)).tolist(),
          "Z_re": Z.real.tolist(), "pair": pair, "steps": sim.nsteps_done, "wall": sim.wall, "dt": sim.dt,
          "speed": sim.nsteps_done * st["cells"] / sim.wall / 1e6, "nets": st["nets"], "ports": st["ports"], "cells": st["cells"],
-         "port_VI": [{"V": p.V.tolist(), "I": p.I.tolist()} for p in sim.ports]}
+         "port_VI": [{"V": p.V.tolist(), "I": p.I.tolist()} for p in sim.ports],
+         "S11": [s11.real.tolist(), s11.imag.tolist()], "S21": [s21.real.tolist(), s21.imag.tolist()], "z0": z0}
     if pair:
         r["Zdiff_re"] = (2 * Z.real).tolist()
     r["summary"] = summary(r)
     return r, sim
+
+
+def end_ports(bd, p, n):
+    """A pair's four ports, P start, P stop, N start, N stop ("REF.PAD"): P's two pads furthest apart, and for each
+    the N pad nearest it (the two nets need not end on the same parts: series resistors, one a net). None when
+    either net has fewer than two pads, or both ends fall on one N pad."""
+    pp = [q for q in bd.pads if q["net"] == p]
+    nn = [q for q in bd.pads if q["net"] == n]
+    if len(pp) < 2 or len(nn) < 2:
+        return None
+    d2 = lambda a, b: (a["x"] - b["x"]) ** 2 + (a["y"] - b["y"]) ** 2  # noqa: E731
+    a, b = max(((x, y) for i, x in enumerate(pp) for y in pp[i + 1:]), key=lambda xy: d2(*xy))
+    na, nb = min(nn, key=lambda q: d2(q, a)), min(nn, key=lambda q: d2(q, b))
+    if na is nb:
+        return None
+    return ["%s.%s" % (q["ref"], q["num"]) for q in (a, b, na, nb)]
+
+
+def line_impedance(r):
+    """The line's own impedance at each frequency, from the two-port S-parameters of the solve (the usual
+    extraction for a line between matched ports):
+
+        Zc = Zref sqrt(((1 + S11)^2 - S21^2) / ((1 - S11)^2 - S21^2))
+
+    Zref the ports' (2 z0 for a pair in odd mode: differential). Unlike the input impedance, which swings between
+    Zref and Zc^2 / Zref along the band, this is the line's impedance itself; where the line is a whole number of
+    half waves long the two brackets both go to zero and the value there is noise, so take a median over a band.
+    Returns the real part, an array over r["f"]."""
+    s11 = np.array(r["S11"][0]) + 1j * np.array(r["S11"][1])
+    s21 = np.array(r["S21"][0]) + 1j * np.array(r["S21"][1])
+    zref = r["z0"] * (2.0 if r["pair"] else 1.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        zc = zref * np.sqrt(((1 + s11) ** 2 - s21 ** 2) / ((1 - s11) ** 2 - s21 ** 2))
+    return np.abs(zc.real)
 
 
 def summary(r):
@@ -122,7 +159,7 @@ def main(argv=None):
     bd = geometry.Board(a.geometry, ref_net=a.ref)
     nets = [a.net_p] + ([a.net_n] if a.net_n else [])
     print("reference net:", bd.ref_net, " stackup:", bd.stackup_source)
-    st = setup(bd, nets, a.ports, res=a.res, base=a.base, margin=a.margin, tie=a.tie)
+    st = setup(bd, nets, a.ports, res=a.res, base=a.base, margin=a.margin, tie=a.tie, use_gpu=not a.cpu)
     if st["shorts"]:
         sys.exit("refusing to solve a shorted model")
     if a.setup_only:

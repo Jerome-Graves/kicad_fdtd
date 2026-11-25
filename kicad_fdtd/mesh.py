@@ -96,7 +96,10 @@ def build_mesh(bd, nets, window, res=0.1, base=0.2, near=0.6, tie_nets=None, air
     lines = {}
     for ny, L, lo, hi in (("x", xl, xmin, xmax), ("y", yl, ymin, ymax)):
         fixed = thin(sorted(L), res * 0.4)
-        grid = [g for g in np.arange(lo, hi + base / 2, base) if min(abs(g - f) for f in fixed) > res * 0.5]
+        # (g <= hi: where hi - lo is a whole number of base steps, arange's last value is hi + base / 2 less a
+        # rounding error, which then sat 2e-13 mm from the first air line and made the time step zero)
+        grid = [g for g in np.arange(lo, hi + base / 2, base)
+                if g <= hi and min(abs(g - f) for f in fixed) > res * 0.5]
         L2 = smooth(sorted(set(fixed + grid)), base)
         L2 = sorted(set([float(v) for v in L2] + air_lines(lo, -1, res, air_cells, grow) + air_lines(hi, +1, res, air_cells, grow)))
         lines[ny] = np.array(L2)

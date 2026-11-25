@@ -15,6 +15,26 @@ import shapely
 from shapely.geometry import box
 
 
+def backend(use_gpu=True):
+    """The module that assigns and checks: voxel_gpu where there is a GPU (the same answer, on a board with planes
+    in a fraction of a second where this takes minutes), unless use_gpu is False; else this one."""
+    if use_gpu:
+        try:
+            import cupy
+            if cupy.cuda.runtime.getDeviceCount() > 0:
+                from . import voxel_gpu
+                return voxel_gpu
+        except Exception:
+            pass
+    import sys
+    return sys.modules[__name__]
+
+
+def port_site(bd, ref, num, **kw):
+    """geometry.Board.port_site (here so both backends answer to the same names)."""
+    return bd.port_site(ref, num, **kw)
+
+
 def assign(bd, lines, tie_nets=None, skip_via_near=(), window=None):
     tie = tie_nets or {}
     x, y, z = lines["x"], lines["y"], lines["z"]

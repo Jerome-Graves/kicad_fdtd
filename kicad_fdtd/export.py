@@ -17,6 +17,8 @@ Everything is exact polygons from KiCad's own geometry engine, no raster:
   stackup = [ {name, type, thickness_mm, er, tand} ]   from the .kicad_pcb setup (may be empty)
   pads = [ {ref, num, net, x, y, layers} ]             for port placement
   footprints = [ {ref, value, x, y, layer} ]
+  tracks = [ {net, layer, x1, y1, x2, y2, w} ]         every track's centreline (an arc as two chords, through its
+                                                        mid point), beside its polygon in copper[layer]
 Coordinates in mm, KiCad's frame (y down); geometry.Board flips y.
 """
 import glob
@@ -77,6 +79,18 @@ def _export_here(PCB, OUT):
     b = pcbnew.LoadBoard(PCB)
     if b is None:
         sys.exit("pcbnew could not load %s" % PCB)
+    g = board_geometry(b, PCB)
+    json.dump(g, open(OUT, "w"))
+    print("%s: %d copper items -> polygons %s, %d vias/PTH, %d pads, %d footprints, stackup %d entries -> %s"
+          % (os.path.basename(PCB), g["items"], {k: len(v) for k, v in g["copper"].items()}, len(g["vias"]),
+             len(g["pads"]), len(g["footprints"]), len(g["stackup"]), OUT))
+
+
+def board_geometry(b, PCB):
+    """The geometry of a board pcbnew holds (b, loaded from the file PCB, whose text gives the stackup), as the dict
+    the JSON holds. In KiCad's Python: a caller that keeps boards in memory (kiLoop's KiCad worker) takes it from
+    here without the file."""
+    import pcbnew
     mm = pcbnew.ToMM
     CU = [(b.GetLayerName(l), l) for l in b.GetEnabledLayers().CuStack()]
     MAXERR = pcbnew.FromMM(0.005)
@@ -95,7 +109,7 @@ def _export_here(PCB, OUT):
         return out
 
     copper = {name: [] for name, _ in CU}
-    vias, pads, fps = [], [], []
+    vias, pads, fps, segs = [], [], [], []
     n_items = 0
     for fp in b.GetFootprints():
         fps.append({"ref": fp.GetReference(), "value": fp.GetValue(), "x": round(mm(fp.GetPosition().x), 4),
@@ -123,6 +137,11 @@ def _export_here(PCB, OUT):
             t.TransformShapeToPolygon(ps, t.GetLayer(), 0, MAXERR, pcbnew.ERROR_INSIDE)
             copper[b.GetLayerName(t.GetLayer())] += polyset(ps, t.GetNetname(), "track")
             n_items += 1
+            ends = [t.GetStart(), t.GetMid(), t.GetEnd()] if cls == "PCB_ARC" else [t.GetStart(), t.GetEnd()]
+            for p, q in zip(ends, ends[1:]):
+                segs.append({"net": t.GetNetname(), "layer": b.GetLayerName(t.GetLayer()), "x1": round(mm(p.x), 4),
+                             "y1": round(mm(p.y), 4), "x2": round(mm(q.x), 4), "y2": round(mm(q.y), 4),
+                             "w": round(mm(t.GetWidth()), 4)})
         elif cls == "PCB_VIA":
             vias.append({"x": round(mm(t.GetPosition().x), 4), "y": round(mm(t.GetPosition().y), 4), "drill": mm(t.GetDrillValue()),
                          "dia": mm(t.GetWidth(pcbnew.F_Cu)), "top": b.GetLayerName(t.TopLayer()), "bottom": b.GetLayerName(t.BottomLayer()),
@@ -151,12 +170,10 @@ def _export_here(PCB, OUT):
                           "er": float(er.group(1)) if er else None, "tand": float(td.group(1)) if td else None})
     nets = sorted(b.FindNet(c).GetNetname() for c in range(b.GetNetCount()) if b.FindNet(c))
     bb = b.GetBoardEdgesBoundingBox()
-    json.dump({"board": os.path.abspath(PCB), "kicad": pcbnew.GetBuildVersion(), "layers": [n for n, _ in CU],
-               "bbox": [mm(bb.GetX()), mm(bb.GetY()), mm(bb.GetWidth()), mm(bb.GetHeight())],
-               "outline": edge, "stackup": stack, "copper": copper, "vias": vias, "pads": pads, "footprints": fps, "nets": nets},
-              open(OUT, "w"))
-    print("%s: %d copper items -> polygons %s, %d vias/PTH, %d pads, %d footprints, stackup %d entries -> %s"
-          % (os.path.basename(PCB), n_items, {k: len(v) for k, v in copper.items()}, len(vias), len(pads), len(fps), len(stack), OUT))
+    return {"board": os.path.abspath(PCB), "kicad": pcbnew.GetBuildVersion(), "layers": [n for n, _ in CU],
+            "bbox": [mm(bb.GetX()), mm(bb.GetY()), mm(bb.GetWidth()), mm(bb.GetHeight())],
+            "outline": edge, "stackup": stack, "copper": copper, "vias": vias, "pads": pads, "footprints": fps,
+            "nets": nets, "tracks": segs, "items": n_items}
 
 
 if __name__ == "__main__":
