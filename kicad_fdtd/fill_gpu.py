@@ -131,8 +131,10 @@ def fills(g, cell=connect_gpu.CELL):
     vias = [v for v in bd.vias() if v["kind"] == "via" and number.get(v["net"], 0)]
     out = {}
     for layer in bd.layers:
+        # highest priority first; between two of one priority, KiCad's own rule: the later UUID
+        # (ZONE::HigherPriority), which decides who gets the ground where two such zones of different nets overlap
         zones = sorted((z for z in g.get("zones") or [] if z["layer"] == layer and number.get(z["net"], 0)),
-                       key=lambda z: -z["priority"])
+                       key=lambda z: (z["priority"], z.get("uuid", "")), reverse=True)
         filled = cp.zeros((len(ys), len(xs)), cp.int32)
         out[layer] = filled
         if not zones:

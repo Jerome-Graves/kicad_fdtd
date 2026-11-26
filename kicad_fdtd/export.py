@@ -180,7 +180,8 @@ def board_geometry(b, PCB):
             n_items += 1
             clr = z.GetLocalClearance()
             zones += [{"layer": name, "net": z.GetNetname(), "name": z.GetZoneName(),
-                       "priority": z.GetAssignedPriority(), "clearance": mm(clr) if clr is not None else 0.0,
+                       "priority": z.GetAssignedPriority(), "uuid": z.m_Uuid.AsString(),
+                       "clearance": mm(clr) if clr is not None else 0.0,
                        "min_width": mm(z.GetMinThickness()), "islands": int(z.GetIslandRemovalMode()),
                        "connect": int(z.GetPadConnection()), "thermal_gap": mm(z.GetThermalReliefGap()),
                        "spoke_width": mm(z.GetThermalReliefSpokeWidth()),
