@@ -119,9 +119,18 @@ def board_geometry(b, PCB):
             on = [name for name, l in CU if pad.IsOnLayer(l)]
             # area: the pad's copper on its first layer, mm2 (the thermal solve shares a part's heat by it)
             area = pad.GetEffectivePolygon(dict(CU)[on[0]], pcbnew.ERROR_INSIDE).Area() / 1e12 if on else 0.0
+            # how the pad joins a pour of its net (fill_gpu's thermal reliefs): its own setting (-1: the zone's),
+            # its gap and spoke overrides, the spokes' angle, and its size and turn to lay them from
+            size = pad.GetSize(dict(CU)[on[0]]) if on else None
+            gap, spoke = pad.GetLocalThermalGapOverride(), pad.GetLocalThermalSpokeWidthOverride()
             pads.append({"ref": fp.GetReference(), "num": pad.GetNumber(), "net": net,
                          "x": round(mm(pad.GetPosition().x), 4), "y": round(mm(pad.GetPosition().y), 4), "layers": on,
-                         "area": round(area, 5)})
+                         "area": round(area, 5), "connect": int(pad.GetLocalZoneConnection()),
+                         "pth": pad.GetAttribute() == pcbnew.PAD_ATTRIB_PTH,
+                         "angle": pad.GetOrientationDegrees(), "spoke_deg": pad.GetThermalSpokeAngleDegrees(),
+                         "size": [mm(size.x), mm(size.y)] if size is not None else [0.0, 0.0],
+                         "gap": mm(gap) if gap is not None else None,
+                         "spoke": mm(spoke) if spoke is not None else None})
             for name, l in CU:
                 if not pad.IsOnLayer(l):
                     continue
@@ -149,11 +158,34 @@ def board_geometry(b, PCB):
             vias.append({"x": round(mm(t.GetPosition().x), 4), "y": round(mm(t.GetPosition().y), 4), "drill": mm(t.GetDrillValue()),
                          "dia": mm(t.GetWidth(pcbnew.F_Cu)), "top": b.GetLayerName(t.TopLayer()), "bottom": b.GetLayerName(t.BottomLayer()),
                          "net": t.GetNetname(), "kind": "via"})
-    for z in b.Zones():
+    # zones: the fills the file holds go with the copper (kind "zone"); what a fill is made FROM goes in "zones"
+    # (fill_gpu makes the fills again from it): each zone's outline on each of its layers with its settings, and
+    # the rule areas no fill may enter, the board's and the footprints'
+    # every hole that is not plated (a mounting hole, a locating peg): no copper round it for a fill to see
+    holes = [{"x": round(mm(pad.GetPosition().x), 4), "y": round(mm(pad.GetPosition().y), 4),
+              "d": max(mm(pad.GetDrillSize().x), mm(pad.GetDrillSize().y))}
+             for fp in b.GetFootprints() for pad in fp.Pads()
+             if pad.GetAttribute() == pcbnew.PAD_ATTRIB_NPTH and pad.GetDrillSize().x > 0]
+    zones, no_fill = [], []
+    for z in list(b.Zones()) + [z for fp in b.GetFootprints() for z in fp.Zones()]:
         for name, l in CU:
-            if z.IsOnLayer(l):
-                copper[name] += polyset(z.GetFilledPolysList(l), z.GetNetname(), "zone")
-                n_items += 1
+            if not z.IsOnLayer(l):
+                continue
+            if z.GetIsRuleArea():
+                if z.GetDoNotAllowZoneFills():
+                    no_fill += [{"layer": name, "outline": p["outline"], "holes": p["holes"]}
+                                for p in polyset(z.Outline(), "", "rule")]
+                continue
+            copper[name] += polyset(z.GetFilledPolysList(l), z.GetNetname(), "zone")
+            n_items += 1
+            clr = z.GetLocalClearance()
+            zones += [{"layer": name, "net": z.GetNetname(), "name": z.GetZoneName(),
+                       "priority": z.GetAssignedPriority(), "clearance": mm(clr) if clr is not None else 0.0,
+                       "min_width": mm(z.GetMinThickness()), "islands": int(z.GetIslandRemovalMode()),
+                       "connect": int(z.GetPadConnection()), "thermal_gap": mm(z.GetThermalReliefGap()),
+                       "spoke_width": mm(z.GetThermalReliefSpokeWidth()),
+                       "min_island_mm2": z.GetMinIslandArea() / 1e12, "outline": p["outline"], "holes": p["holes"]}
+                      for p in polyset(z.Outline(), z.GetNetname(), "outline")]
 
     outline = pcbnew.SHAPE_POLY_SET()
     b.GetBoardPolygonOutlines(outline, True)
@@ -176,7 +208,10 @@ def board_geometry(b, PCB):
     return {"board": os.path.abspath(PCB), "kicad": pcbnew.GetBuildVersion(), "layers": [n for n, _ in CU],
             "bbox": [mm(bb.GetX()), mm(bb.GetY()), mm(bb.GetWidth()), mm(bb.GetHeight())],
             "outline": edge, "stackup": stack, "copper": copper, "vias": vias, "pads": pads, "footprints": fps,
-            "nets": nets, "tracks": segs, "items": n_items}
+            "nets": nets, "tracks": segs, "items": n_items, "zones": zones, "no_fill": no_fill,
+            "holes": holes, "hole_clearance": mm(b.GetDesignSettings().m_HoleClearance),
+            "edge_clearance": mm(b.GetDesignSettings().m_CopperEdgeClearance),
+            "min_clearance": mm(b.GetDesignSettings().m_MinClearance)}
 
 
 if __name__ == "__main__":
