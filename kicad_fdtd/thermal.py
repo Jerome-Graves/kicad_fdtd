@@ -7,7 +7,13 @@ Thermal: finite-volume heat conduction on a whole-board rectilinear grid. Every 
 layer is one cell thick (35 um by default) with conductivity k_cu * copper fraction
 (exact polygons sampled 3 x 3 per cell); dielectric cells are FR4 (0.8 W/mK in plane,
 0.3 through); via barrels add through-plane copper. Component power goes into the cells
-under the footprint's pads. Convection h (W/m2K) to T_amb on both faces, edges adiabatic,
+under the footprint's pads, shared by the pads' copper areas and spread over the cells each
+pad's copper covers: a package gives its heat to the board through its lands, most of it
+through the largest (a QFN's exposed pad, not its pins), over the whole land. Shared equally
+and put in at each pad's centre instead, a 4 x 4 mm charger's 24 pins took two thirds of its
+heat into their 0.25 mm tracks, and the hottest cell was a signal pin 10 K over the exposed
+pad (MP-BOY, 2026-11-26); by area but still at the centres, the exposed pad became a point
+source 20 K hotter again. A geometry file from before pads had areas is shared equally. Convection h (W/m2K) to T_amb on both faces, edges adiabatic,
 no radiation, nothing above the board (a conservative estimate).
 
 DC: on one net, sheet conduction in the copper layers (sigma t x fraction) and via barrels
@@ -167,6 +173,35 @@ class Grid:
             out.append((i, j, self.k_cu[lay]))
         return out
 
+    def heat_cells(self, ref):
+        """Where a footprint's heat goes in: [((i, j, k), share)], the shares summing to 1. Each pad takes its
+        copper area's share (equal where the geometry has no areas), spread evenly over the cells whose centres
+        its copper covers on its outer layer (the cell under its centre where it covers none)."""
+        pads = [p for p in self.bd.pads if p["ref"] == ref and p["layers"]]
+        centres = self.pad_cells(ref)
+        areas = [float(p.get("area") or 0.0) for p in pads]
+        total = sum(areas)
+        out = []
+        for p, centre, area in zip(pads, centres, areas):
+            share = area / total if total > 0 else 1.0 / len(pads)
+            layer = next(l for l, k in self.k_cu.items() if k == centre[2])
+            x, y = self.bd.pt(p["x"], p["y"])
+            cells = []
+            for net, kind, P in self.bd.polys(layer):
+                x0, y0, x1, y1 = P.bounds
+                if kind != "pad" or net != p["net"] or not (x0 <= x <= x1 and y0 <= y <= y1):
+                    continue
+                i0, i1 = np.searchsorted(self.cx, [x0, x1])
+                j0, j1 = np.searchsorted(self.cy, [y0, y1])
+                X, Y = np.meshgrid(self.cx[i0:i1], self.cy[j0:j1], indexing="ij")
+                inside = shapely.contains_xy(P, X.ravel(), Y.ravel()).reshape(X.shape)
+                cells = [(i0 + int(a), j0 + int(b), centre[2]) for a, b in zip(*np.nonzero(inside))]
+                if cells:
+                    break
+            cells = cells or [centre]
+            out += [(c, share / len(cells)) for c in cells]
+        return out
+
 
 # ---------------------------------------------------------------- linear algebra
 def _cg(rows, cols, vals, diag, b, tol=1e-9, maxiter=20000, use_gpu=True):
@@ -312,8 +347,8 @@ def solve_thermal(g, powers, h=10.0, tamb=25.0, extra_q=None, use_gpu=True):
         cells = g.pad_cells(ref)
         if not cells:
             raise ValueError("no pads for footprint %s" % ref)
-        for c in cells:
-            q[c] += P / len(cells)
+        for c, share in g.heat_cells(ref):
+            q[c] += P * share
         placed[ref] = len(cells)
     if extra_q is not None:
         q += extra_q

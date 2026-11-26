@@ -117,8 +117,11 @@ def board_geometry(b, PCB):
         for pad in fp.Pads():
             net = pad.GetNetname()
             on = [name for name, l in CU if pad.IsOnLayer(l)]
+            # area: the pad's copper on its first layer, mm2 (the thermal solve shares a part's heat by it)
+            area = pad.GetEffectivePolygon(dict(CU)[on[0]], pcbnew.ERROR_INSIDE).Area() / 1e12 if on else 0.0
             pads.append({"ref": fp.GetReference(), "num": pad.GetNumber(), "net": net,
-                         "x": round(mm(pad.GetPosition().x), 4), "y": round(mm(pad.GetPosition().y), 4), "layers": on})
+                         "x": round(mm(pad.GetPosition().x), 4), "y": round(mm(pad.GetPosition().y), 4), "layers": on,
+                         "area": round(area, 5)})
             for name, l in CU:
                 if not pad.IsOnLayer(l):
                     continue
