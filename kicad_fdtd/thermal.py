@@ -37,9 +37,10 @@ VIA_WALL = 0.025                                            # mm plating
 class Grid:
     """Whole-board rectilinear cells. k index runs from the top copper downwards."""
 
-    def __init__(self, bd, cell=0.25, dz_max=0.4):
+    def __init__(self, bd, cell=0.25, dz_max=0.4, use_gpu=True):
         self.bd = bd
         self.cell = cell
+        self.use_gpu = use_gpu
         nx = max(2, int(math.ceil(bd.w / cell)) + 1)
         ny = max(2, int(math.ceil(bd.h / cell)) + 1)
         self.x = np.linspace(0.0, bd.w, nx)
@@ -85,11 +86,27 @@ class Grid:
             if not ps:
                 self._frac_cache[key] = np.zeros((self.nx, self.ny))
             else:
-                U = unary_union(ps)
-                X, Y = self._sub_points()
-                inside = shapely.contains_xy(U, X, Y).reshape(self.nx, self.ny, 9)
-                self._frac_cache[key] = inside.mean(axis=2)
+                frac = self._fraction_gpu(layer, net) if self.use_gpu else None
+                if frac is None:
+                    U = unary_union(ps)
+                    X, Y = self._sub_points()
+                    frac = shapely.contains_xy(U, X, Y).reshape(self.nx, self.ny, 9).mean(axis=2)
+                self._frac_cache[key] = frac
         return self._frac_cache[key]
+
+    def _fraction_gpu(self, layer, net):
+        """copper_fraction's 3 x 3 samples a cell on the card (voxel_gpu.coverage), or None where there is no card:
+        a whole board's planes are tens of thousands of zone vertices, and their union alone took shapely over ten
+        minutes on MP-BOY's eight layers (2026-11-25)."""
+        try:
+            from . import voxel_gpu
+        except Exception:
+            return None
+        o = np.array([-1 / 3, 0.0, 1 / 3])
+        xs = (self.cx[:, None] + o[None, :] * self.dx[:, None]).ravel()
+        ys = (self.cy[:, None] + o[None, :] * self.dy[:, None]).ravel()
+        inside = voxel_gpu.coverage(self.bd, layer, xs, ys, net)
+        return inside.reshape(self.nx, 3, self.ny, 3).mean(axis=(1, 3))
 
     def inside_outline(self):
         if not hasattr(self, "_in"):

@@ -230,6 +230,13 @@ def _layer_of(bd, layer, key, pick):
     return cache[(layer, key)]
 
 
+def coverage(bd, layer, xs, ys, net=None):
+    """Whether there is copper on a layer (all nets, or one) at every point (xs[i], ys[j]), xs and ys rising: a
+    numpy bool array [len(xs), len(ys)]. Polygons may overlap; none is merged with another first."""
+    lay = _layer_of(bd, layer, ("net", net), lambda n: net is None or n == net)
+    return cp.asnumpy(lay.at(cp.asarray(xs, cp.float64), cp.asarray(ys, cp.float64)) >= 0)
+
+
 def port_site(bd, ref, num, tie_nets=None, max_shift=3.5, w=None, ref_net=None):
     """geometry.Board.port_site with every candidate tested at once: the same first spot whose whole face is on
     the pad's net on the signal layer and on the reference net alone on the plane layer."""
