@@ -81,8 +81,9 @@ def check(g, cell=CELL, zone_fill=None):
     """The board geometry dict `g` (or a path to its JSON) read as above. zone_fill: the pours as fill_gpu.fills
     made them, {layer: net number at each cell}, in place of the fills the file holds (stale once copper has been
     added since KiCad last filled them). Returns
-        {"open": {net: open connections}, "shorts": [{"nets": [a, b], "layer", "x", "y"}], "nets": nets with pads,
-         "cells": [nx, ny], "seconds": s}
+        {"open": {net: open connections}, "open_at": {net: [[x, y] of a pad in each group cut off from the net's
+         largest]}, "shorts": [{"nets": [a, b], "layer", "x", "y"}], "nets": nets with pads, "cells": [nx, ny],
+         "seconds": s}
     x, y in board mm."""
     t0 = time.time()
     bd = geometry.Board(g)
@@ -159,13 +160,18 @@ def check(g, cell=CELL, zone_fill=None):
         mine = [m for m in mine if m[1]]
         for a, b in zip(mine, mine[1:]):                 # a pad on several layers is one piece of copper
             groups.join(a, b)
-        by_net.setdefault(p["net"], []).append(mine[0] if mine else ("pad", p["ref"], p["num"]))
-    opens = {}
+        by_net.setdefault(p["net"], []).append((mine[0] if mine else ("pad", p["ref"], p["num"]), p["x"], p["y"]))
+    opens, open_at = {}, {}
     for net, nodes in by_net.items():
-        roots = {groups.find(n) for n in nodes}
-        if len(roots) > 1:
-            opens[net] = len(roots) - 1
-    return {"open": opens, "shorts": shorts, "nets": len(by_net), "cells": [nx, ny],
+        at = {}                                          # each group of the net's pads: one of its pads' places
+        for n, x, y in nodes:
+            at.setdefault(groups.find(n), []).append([x, y])
+        if len(at) > 1:
+            opens[net] = len(at) - 1
+            # the pads cut off from the net's largest group, a place for each group: where a join is wanted
+            rest = sorted(at.values(), key=len)[:-1]
+            open_at[net] = [g[0] for g in rest]
+    return {"open": opens, "open_at": open_at, "shorts": shorts, "nets": len(by_net), "cells": [nx, ny],
             "seconds": round(time.time() - t0, 2)}
 
 

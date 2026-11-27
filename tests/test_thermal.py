@@ -55,6 +55,9 @@ def test_track_ir_drop():
     assert abs(dc["Jmax"] - 1.0 / (w * t) / 1e6) / (1.0 / (w * t) / 1e6) < 0.25
     # Joule heat must equal I^2 R
     assert abs(dc["joule_W"] - 1.0 * dc["drop_V"]) / (1.0 * dc["drop_V"]) < 0.02
+    # the loads given as a list: one load is the same solve, and its own volts come back with it
+    many = thermal.solve_dc(gr, "/T", ("P", "1"), [("P", "2")], 1.0, use_gpu=False)
+    assert abs(many["drop_V"] - dc["drop_V"]) < 1e-9 and len(many["sink_V"]) == 1, (many["drop_V"], many["sink_V"])
 
 
 if __name__ == "__main__":

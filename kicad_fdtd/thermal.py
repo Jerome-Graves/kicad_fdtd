@@ -262,7 +262,11 @@ def _links(g, kx, ky, kz, active=None):
 # ---------------------------------------------------------------- DC
 def solve_dc(g, net, src, sink, current, use_gpu=True):
     """DC conduction on one net. src/sink = (ref, num). Returns dict with V (volts per cell,
-    nan off-net), drop, J (A/mm2 per cell), joule (W per cell)."""
+    nan off-net), drop, J (A/mm2 per cell), joule (W per cell).
+
+    sink may be a list of (ref, num): the loads of one supply, each taking an equal share of the current, solved
+    together (one solve where a rail feeds forty LEDs, not forty). The volts are then against the first load's
+    pad, "sink_V" has every load's own, and drop_V is from the source to the lowest of them: the worst load's."""
     bd = g.bd
     nx, ny, nz = g.nx, g.ny, g.nz
     sig = 1.0 / RHO_CU
@@ -283,8 +287,10 @@ def solve_dc(g, net, src, sink, current, use_gpu=True):
     a, b, G = _links(g, sx, sx, sz, active)
     # keep only the component connected to the source; ground one sink cell
     src_cells = [c for c in g.pad_cells(*src) if active[c]]
-    sink_cells = [c for c in g.pad_cells(*sink) if active[c]]
-    if not src_cells or not sink_cells:
+    sinks = sink if isinstance(sink, list) else [sink]
+    per_sink = [[c for c in g.pad_cells(*s) if active[c]] for s in sinks]
+    sink_cells = [c for cells in per_sink for c in cells]
+    if not src_cells or not all(per_sink):
         raise ValueError("source or sink pad has no copper of net %s under it at this cell size" % net)
     flat = lambda c: (c[0] * ny + c[1]) * nz + c[2]
     n = nx * ny * nz
@@ -306,8 +312,9 @@ def solve_dc(g, net, src, sink, current, use_gpu=True):
     rhs = np.zeros(m)
     for c in src_cells:
         rhs[loc[flat(c)]] += current / len(src_cells)
-    for c in sink_cells:
-        rhs[loc[flat(c)]] -= current / len(sink_cells)
+    for cells in per_sink:
+        for c in cells:
+            rhs[loc[flat(c)]] -= current / len(per_sink) / len(cells)
     gnd = loc[flat(sink_cells[0])]
     diag[gnd] += 1e3 * diag.max()                     # pin ~0 V
     x = _cg(np.concatenate([ra, rb]), np.concatenate([rb, ra]), np.concatenate([G, G]), diag, rhs, use_gpu=use_gpu)
@@ -327,8 +334,10 @@ def solve_dc(g, net, src, sink, current, use_gpu=True):
     with np.errstate(divide="ignore", invalid="ignore"):
         Jl = np.where(inplane & (f > 0), np.abs(I_link) / (t * f * width), 0.0) / 1e6      # A/mm2
     np.maximum.at(J, a, Jl); np.maximum.at(J, b, Jl)
-    Vs = np.mean([V[flat(c)] for c in src_cells])
+    sink_V = [float(np.mean([V[flat(c)] for c in cells])) for cells in per_sink]
+    Vs = np.mean([V[flat(c)] for c in src_cells]) - min(sink_V)
     return {"net": net, "current": current, "drop_V": float(Vs), "R_ohm": float(Vs / current) if current else 0.0,
+            "sink_V": sink_V,
             "V": V.reshape(nx, ny, nz), "J": J.reshape(nx, ny, nz), "joule": joule.reshape(nx, ny, nz),
             "joule_W": float(joule.sum()), "Jmax": float(J.max()), "cells": int(m)}
 
